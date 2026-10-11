@@ -20,6 +20,11 @@ export default function AppTabs() {
         />
       </NativeTabs.Trigger>
 
+      <NativeTabs.Trigger name="alarms">
+        <NativeTabs.Trigger.Label>Alarm</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="alarm.fill" md="alarm" />
+      </NativeTabs.Trigger>
+
       <NativeTabs.Trigger name="explore">
         <NativeTabs.Trigger.Label>Explore</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon

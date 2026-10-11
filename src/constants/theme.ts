@@ -63,3 +63,20 @@ export const Spacing = {
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
+
+/**
+ * Single brand accent for the whole app (taste: color consistency lock).
+ * Neutral surfaces come from Colors; this is the only saturated color.
+ */
+export const Accent = '#208AEF' as const;
+export const Danger = '#EF4444' as const;
+
+/**
+ * Single corner-radius system (taste: shape consistency lock).
+ * blocks = section surfaces, controls = buttons/inputs, chip = pills.
+ */
+export const Radius = {
+  block: 16,
+  control: 12,
+  chip: 999,
+} as const;
