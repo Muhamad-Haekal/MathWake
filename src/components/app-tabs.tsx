@@ -32,6 +32,16 @@ export default function AppTabs() {
           renderingMode="template"
         />
       </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="timer">
+        <NativeTabs.Trigger.Label>Timer</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="timer" md="timer" />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="stopwatch">
+        <NativeTabs.Trigger.Label>Stopwatch</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="stopwatch" md="timer" />
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }

@@ -41,3 +41,19 @@ example
 # generated native folders
 /ios
 /android
+
+# Local tooling and generated analysis
+.opencode/
+graphify-out/
+
+# Supabase local state
+supabase/.temp/
+
+# Local debug logs
+mathwake-error.txt
+mathwake-log.txt
+
+# Android/Gradle generated artifacts
+**/build/
+**/.gradle/
+**/.cxx/

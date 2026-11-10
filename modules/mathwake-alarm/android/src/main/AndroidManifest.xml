@@ -1,0 +1,38 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Exact alarms (Android 12+ requires user grant; checked at runtime). -->
+  <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+  <!-- Full-screen alarm intent on the lock screen (Android 14+ gated). -->
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+  <!-- Re-arm alarms after device reboot. -->
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <!-- Keep the CPU awake while the looping ringer plays (mediaPlayback FGS). -->
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <!-- Foreground service for persistent alarm audio (Android 14+ type). -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+  <application>
+    <!-- Handles both alarm fires (explicit intents) and BOOT_COMPLETED, so
+         it must stay exported for the system broadcast to reach it.
+         Fully qualified name: library manifests resolve relative names
+         against the library namespace at merge time, but the explicit form
+         leaves no room for misresolution. -->
+    <receiver
+      android:name="expo.modules.mathwakealarm.MathWakeAlarmReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+      </intent-filter>
+    </receiver>
+
+    <!-- Persistent looping alarm audio started by the receiver at fire time.
+         mediaPlayback type + FOREGROUND_SERVICE_MEDIA_PLAYBACK keep the loop
+         alive on the lock screen and in the background. -->
+    <service
+      android:name="expo.modules.mathwakealarm.AlarmRingerService"
+      android:exported="false"
+      android:foregroundServiceType="mediaPlayback" />
+  </application>
+</manifest>

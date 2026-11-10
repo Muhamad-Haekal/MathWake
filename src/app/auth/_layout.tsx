@@ -13,7 +13,10 @@ export default function AuthLayout() {
         headerShown: false,
         contentStyle: { backgroundColor: colors.background },
         animation: 'fade',
-      }}
-    />
+      }}>
+      <Stack.Screen name="login" />
+      <Stack.Screen name="callback" />
+      <Stack.Screen name="register" />
+    </Stack>
   );
 }

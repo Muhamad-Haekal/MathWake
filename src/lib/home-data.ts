@@ -15,6 +15,8 @@ export interface AlarmRow {
   user_id: string;
   /** Postgres `time` serialized as "HH:MM:SS". Interpreted in device local time. */
   time: string;
+  /** Older rows may not contain a title until the user applies the migration. */
+  title?: string | null;
   /** Weekday tokens, e.g. ["Mon","Wed"] or ["1","3"]. Null/empty = non-repeating. */
   days: string[] | null;
   is_active: boolean;
@@ -22,23 +24,10 @@ export interface AlarmRow {
   is_recurring: boolean | null;
   difficulty: string | null;
   question_count: number | null;
+  /** Per-alarm interval; absent/null responses are treated as 10 minutes. */
+  snooze_minutes?: number | null;
   preset: string | null;
   created_at: string;
-}
-
-export interface RoutineItemRow {
-  id: string;
-  user_id: string;
-  label: string;
-  sort_order: number;
-  /** Target repetitions for the item. */
-  count: number;
-}
-
-export interface RoutineCompletionRow {
-  routine_item_id: string;
-  completed_date: string;
-  count: number;
 }
 
 export interface AlarmLogRow {
@@ -58,19 +47,9 @@ export interface NextAlarm {
   at: Date;
 }
 
-export interface RoutineProgress {
-  item: RoutineItemRow;
-  done: number;
-  target: number;
-  finished: boolean;
-}
-
 export interface HomeData {
   activeAlarms: AlarmRow[];
   nextAlarm: NextAlarm | null;
-  routine: RoutineProgress[];
-  routineDone: number;
-  routineTotal: number;
   logsToday: number;
   attemptsToday: { total: number; correct: number };
   /**
@@ -311,7 +290,7 @@ export function describeAlarmSchedule(alarm: Pick<AlarmRow, 'is_recurring' | 'da
 
 /** "Hari ini", "Besok", or the weekday name for a future datetime. */
 export function describeAlarmDay(at: Date, now: Date): string {
-  const startToday = startOfToday();
+  const startToday = startOfDay(now);
   const diffDays = Math.round((startOfDay(at).getTime() - startToday.getTime()) / DAY_MS);
   if (diffDays <= 0) return 'Hari ini';
   if (diffDays === 1) return 'Besok';
@@ -324,19 +303,29 @@ function startOfDay(d: Date): Date {
   return c;
 }
 
-/** "dalam 5 menit", "dalam 2 jam 10 menit", "dalam 3 hari". */
+/**
+ * "dalam 5 menit", "dalam 2 jam 10 menit", "dalam 1 hari 3 jam".
+ * Rounded UP to whole minutes: alarms fire at :00 seconds, so the ceiling
+ * equals the clock-minute difference the user sees (06:00:30 -> 07:00 is
+ * "1 jam", not "59 menit"). A past/now target reads "segera berbunyi".
+ */
 export function formatCountdown(at: Date, now: Date): string {
-  const diffMs = Math.max(0, at.getTime() - now.getTime());
-  const totalMinutes = Math.floor(diffMs / 60000);
-  if (totalMinutes < 1) return 'segera berbunyi';
-  if (totalMinutes < 60) return `dalam ${totalMinutes} menit`;
-  const hours = Math.floor(totalMinutes / 60);
+  const diffMs = at.getTime() - now.getTime();
+  if (diffMs <= 0) return 'segera berbunyi';
+  const totalMinutes = Math.ceil(diffMs / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
   const minutes = totalMinutes % 60;
-  if (hours < 24) {
-    return minutes === 0 ? `dalam ${hours} jam` : `dalam ${hours} jam ${minutes} menit`;
-  }
-  const days = Math.floor(hours / 24);
-  return days === 1 ? 'dalam 1 hari' : `dalam ${days} hari`;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days} hari`);
+  if (hours > 0) parts.push(`${hours} jam`);
+  if (minutes > 0) parts.push(`${minutes} menit`);
+  return `dalam ${parts.join(' ')}`;
+}
+
+/** Milliseconds until the next wall-clock minute boundary (countdown tick). */
+export function msUntilNextMinute(now: Date): number {
+  return 60000 - (now.getTime() % 60000);
 }
 
 // ---------------------------------------------------------------------------
@@ -357,37 +346,16 @@ export async function fetchHomeData(
   userId: string,
   now: Date = new Date(),
 ): Promise<HomeData> {
-  const todayStr = toLocalDateString(now);
   const weekAgo = new Date(now.getTime() - 6 * DAY_MS);
-  const weekAgoStr = toLocalDateString(weekAgo);
   const weekAgoISO = weekAgo.toISOString();
 
-  const [alarmsRes, itemsRes, completionsRes, logsRes] = await Promise.all([
+  const [alarmsRes, logsRes] = await Promise.all([
     client
       .from('alarms')
-      .select('id,user_id,time,days,is_active,is_recurring,difficulty,question_count,preset,created_at')
+      .select('id,user_id,time,days,title,is_active,is_recurring,difficulty,question_count,preset,snooze_minutes,created_at')
       .eq('user_id', userId)
       .eq('is_active', true)
       .order('time', { ascending: true })
-      .limit(QUERY_LIMIT),
-    // NOTE: select="*" is deliberate here. The table has a data column
-    // literally named `count`, and PostgREST parses a bare `count` in the
-    // select list as the count() aggregate (verified live: 42803 GROUP BY
-    // error), even when double-quoted. Star-select avoids the collision;
-    // only the verified columns below are read from the rows.
-    client
-      .from('routine_items')
-      .select('*')
-      .eq('user_id', userId)
-      .order('sort_order', { ascending: true })
-      .limit(QUERY_LIMIT),
-    // Same `count`-column collision as routine_items: star-select, then
-    // join to items in TypeScript via routine_item_id below.
-    client
-      .from('routine_completions')
-      .select('*')
-      .eq('user_id', userId)
-      .gte('completed_date', weekAgoStr)
       .limit(QUERY_LIMIT),
     client
       .from('alarm_logs')
@@ -399,8 +367,6 @@ export async function fetchHomeData(
   ]);
 
   throwIfError(alarmsRes.error, 'alarms');
-  throwIfError(itemsRes.error, 'routine_items');
-  throwIfError(completionsRes.error, 'routine_completions');
   throwIfError(logsRes.error, 'alarm_logs');
 
   // Attempts is read defensively: the authenticated role may lack SELECT
@@ -427,25 +393,9 @@ export async function fetchHomeData(
   }
 
   const activeAlarms = (alarmsRes.data ?? []) as AlarmRow[];
-  const items = (itemsRes.data ?? []) as RoutineItemRow[];
-  const completions = (completionsRes.data ?? []) as RoutineCompletionRow[];
   const logs = (logsRes.data ?? []) as AlarmLogRow[];
 
-  const doneByItem = new Map<string, number>();
-  for (const c of completions) {
-    if (c.completed_date !== todayStr) continue;
-    const prev = doneByItem.get(c.routine_item_id) ?? 0;
-    const add = typeof c.count === 'number' && Number.isFinite(c.count) ? c.count : 1;
-    doneByItem.set(c.routine_item_id, prev + add);
-  }
-
-  const routine: RoutineProgress[] = items.map((item) => {
-    const target = typeof item.count === 'number' && item.count > 0 ? item.count : 1;
-    const done = Math.min(doneByItem.get(item.id) ?? 0, target);
-    return { item, done, target, finished: done >= target };
-  });
-  const routineDone = routine.filter((r) => r.finished).length;
-
+  const todayStr = toLocalDateString(now);
   const isToday = (iso: string) => toLocalDateString(new Date(iso)) === todayStr;
   const logsToday = logs.filter((l) => isToday(l.completed_at)).length;
 
@@ -458,9 +408,6 @@ export async function fetchHomeData(
   return {
     activeAlarms,
     nextAlarm: nextAlarmFromList(activeAlarms, now),
-    routine,
-    routineDone,
-    routineTotal: routine.length,
     logsToday,
     attemptsToday,
     attemptsUnavailable,

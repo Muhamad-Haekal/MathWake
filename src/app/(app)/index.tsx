@@ -1,9 +1,8 @@
-import { useCallback, useRef } from 'react';
-import { Alert, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import { Alert, AppState, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { NextAlarmCard } from '@/components/home/next-alarm-card';
-import { RoutineSummary } from '@/components/home/routine-summary';
 import { TodayStats } from '@/components/home/today-stats';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -11,22 +10,154 @@ import { BottomTabInset, Danger, MaxContentWidth, Radius, Spacing } from '@/cons
 import { useAuth } from '@/contexts/auth-context';
 import { useHomeData } from '@/hooks/use-home-data';
 import { useTheme } from '@/hooks/use-theme';
-import { formatFullDateID, greetingForHour } from '@/lib/home-data';
-import { useFocusEffect } from 'expo-router';
+import { formatFullDateID, greetingForHour, msUntilNextMinute, nextAlarmFromList } from '@/lib/home-data';
+import {
+  getNativeActiveAlarmEvent,
+  getNativeActiveAlarmId,
+  getNativeAlarmEvent,
+} from '@/lib/alarm-native';
+import { isAlarmAudioPlaying } from '@/lib/alarm-audio';
+import { resolveActiveAlarm, type ActiveAlarmState } from '@/lib/alarm-active-state';
+import { getAlarmSession, type AlarmSession } from '@/lib/alarm-session';
+import { buildActiveChallengeParams, resolveActiveChallengeOccurrence } from '@/lib/active-challenge-entry';
+import { normalizeAlarmTitle } from '@/lib/alarms';
+import { supabase } from '@/lib/supabase';
+import type { NativeAlarmEvent } from '../../../modules/mathwake-alarm/src/types';
+import { router, useFocusEffect } from 'expo-router';
 
 // ---------------------------------------------------------------------------
 // Home dashboard. All sections render real Supabase data (alarms,
-// routine_items + routine_completions, alarm_logs, attempts) with
+// alarm_logs, attempts) with
 // skeleton loading, truthful empty states, and an inline error + retry.
 // ---------------------------------------------------------------------------
 
 export default function HomeScreen() {
   const { signOut, user } = useAuth();
   const { data, isLoading, isRefreshing, error, refresh } = useHomeData();
+  const [active, setActive] = useState<ActiveAlarmState | null>(null);
+  const [now, setNow] = useState(() => new Date());
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [openingChallenge, setOpeningChallenge] = useState(false);
+  const [challengeError, setChallengeError] = useState<string | null>(null);
+  const openingChallengeRef = useRef(false);
   const theme = useTheme();
+
+  const refreshActive = useCallback(async () => {
+    const [nativeId, session] = await Promise.all([getNativeActiveAlarmId(), getAlarmSession()]);
+    const current = new Date();
+    setNow(current);
+    setActive(resolveActiveAlarm({
+      nativeActiveId: nativeId,
+      session,
+      jsAudioPlaying: session ? isAlarmAudioPlaying(session.alarmId, session.eventId) : false,
+      nowMs: current.getTime(),
+    }));
+  }, []);
+
+  const readChallengeEvidence = useCallback(async (alarmId: string) => {
+    const [nativeId, session] = await Promise.all([getNativeActiveAlarmId(), getAlarmSession()]);
+    let nativeOwner: Awaited<ReturnType<typeof getNativeActiveAlarmEvent>> = null;
+    let nativeEvent: NativeAlarmEvent | null = null;
+    if (nativeId === alarmId) {
+      nativeOwner = await getNativeActiveAlarmEvent();
+      if (nativeOwner?.alarmId === alarmId) {
+        const event = await getNativeAlarmEvent(nativeOwner.eventId);
+        if (event?.eventId === nativeOwner.eventId && event.generation === nativeOwner.generation) nativeEvent = event;
+      }
+    }
+    const jsAudioPlaying = session ? isAlarmAudioPlaying(session.alarmId, session.eventId) : false;
+    return {
+      nativeId,
+      nativeOwner,
+      session,
+      occurrence: resolveActiveChallengeOccurrence({
+        alarmId,
+        nativeActiveId: nativeId,
+        nativeOwner,
+        nativeEvent,
+        session,
+        jsAudioPlaying,
+        nowMs: Date.now(),
+      }),
+    };
+  }, []);
+
+  const continueActiveChallenge = useCallback(async () => {
+    if (!active || openingChallengeRef.current) return;
+    openingChallengeRef.current = true;
+    setOpeningChallenge(true);
+    setChallengeError(null);
+    try {
+      const first = await readChallengeEvidence(active.alarmId);
+      if (!first.occurrence) throw new Error('Alarm ini sudah tidak berbunyi atau sesi tantangannya sudah berakhir. Muat ulang Home untuk memeriksa status terbaru.');
+      if (!user?.id) throw new Error('Sesi akun tidak tersedia. Masuk kembali lalu coba lagi.');
+
+      const { data: row, error: fetchError } = await supabase
+        .from('alarms')
+        .select('is_active,title,difficulty,question_count')
+        .eq('id', active.alarmId)
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (fetchError) throw new Error('Konfigurasi alarm tidak dapat dimuat. Periksa koneksi lalu coba lagi.');
+      // is_active describes whether this schedule should fire again. A one-time
+      // alarm is disabled after it fires, while its native occurrence can still
+      // be ringing and waiting for this challenge.
+      if (!row) throw new Error('Alarm ini tidak ditemukan atau bukan milik akun ini. Tantangan tidak dapat dibuka.');
+
+      const latest = await readChallengeEvidence(active.alarmId);
+      if (!latest.occurrence || latest.occurrence.eventId !== first.occurrence.eventId || latest.occurrence.generation !== first.occurrence.generation) {
+        throw new Error('Alarm aktif telah berubah. Muat ulang Home sebelum membuka tantangan.');
+      }
+
+      const session: AlarmSession | null = latest.session?.alarmId === active.alarmId
+        && latest.session.eventId === latest.occurrence.eventId
+        && latest.session.generation === latest.occurrence.generation
+        ? latest.session
+        : null;
+      router.replace({
+        pathname: '/challenge',
+        params: buildActiveChallengeParams(latest.occurrence, {
+          title: normalizeAlarmTitle(row.title),
+          difficulty: session?.difficulty ?? row.difficulty,
+          questionCount: session?.questionCount ?? row.question_count,
+          timeLimitSeconds: session?.timeLimitSeconds,
+          maxMistakes: session?.maxMistakes,
+        }),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Tantangan tidak dapat dibuka. Coba lagi.';
+      setChallengeError(message);
+      if (/sudah tidak berbunyi|sudah tidak aktif|sesi tantangannya sudah berakhir/.test(message)) {
+        setActive(null);
+        void refreshActive();
+        void refresh();
+      }
+    } finally {
+      openingChallengeRef.current = false;
+      setOpeningChallenge(false);
+    }
+  }, [active, readChallengeEvidence, refresh, refreshActive, user]);
+
+  useFocusEffect(
+    useCallback(() => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const tick = () => {
+        void refreshActive();
+        timer = setTimeout(tick, msUntilNextMinute(new Date()));
+      };
+      tick();
+      const sub = AppState.addEventListener('change', (state) => {
+        if (state === 'active') void refreshActive();
+      });
+      return () => {
+        if (timer !== null) clearTimeout(timer);
+        sub.remove();
+      };
+    }, [refreshActive]),
+  );
   const insets = useSafeAreaInsets();
 
-  const now = new Date();
   const greeting = greetingForHour(now.getHours());
   const todayLabel = formatFullDateID(now);
 
@@ -43,14 +174,27 @@ export default function HomeScreen() {
     }, [refresh]),
   );
 
+  async function confirmSignOut() {
+    setSignOutError(null);
+    setSigningOut(true);
+    try {
+      await signOut();
+      router.replace('/auth/login' as never);
+    } catch {
+      setSignOutError('Tidak dapat keluar dari akun. Periksa koneksi lalu coba lagi.');
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
   function handleSignOut() {
     if (Platform.OS === 'web') {
-      signOut();
+      void confirmSignOut();
       return;
     }
     Alert.alert('Keluar', 'Yakin ingin keluar dari akun?', [
       { text: 'Batal', style: 'cancel' },
-      { text: 'Keluar', style: 'destructive', onPress: signOut },
+      { text: 'Keluar', style: 'destructive', onPress: () => { void confirmSignOut(); } },
     ]);
   }
 
@@ -83,16 +227,27 @@ export default function HomeScreen() {
                 </ThemedText>
               ) : null}
             </View>
-            <Pressable
-              onPress={handleSignOut}
-              accessibilityRole="button"
-              accessibilityLabel="Keluar dari akun"
-              hitSlop={12}>
-              <ThemedText type="small" style={styles.signOutText}>
-                Keluar
-              </ThemedText>
-            </Pressable>
+            <View style={styles.headerActions}>
+              <Pressable
+                onPress={() => router.push('/profile' as never)}
+                accessibilityRole="button"
+                accessibilityLabel="Buka profil"
+                hitSlop={12}>
+                <ThemedText type="small" style={styles.profileLinkText}>Profil</ThemedText>
+              </Pressable>
+              <Pressable
+                onPress={handleSignOut}
+                disabled={signingOut}
+                accessibilityRole="button"
+                accessibilityLabel="Keluar dari akun"
+                hitSlop={12}>
+                <ThemedText type="small" style={styles.signOutText}>
+                  {signingOut ? 'Keluar...' : 'Keluar'}
+                </ThemedText>
+              </Pressable>
+            </View>
           </View>
+          {signOutError ? <ThemedText type="small" style={styles.signOutError}>{signOutError}</ThemedText> : null}
 
           {isLoading ? (
             <HomeSkeleton />
@@ -115,20 +270,19 @@ export default function HomeScreen() {
           ) : (
             <View style={styles.sections}>
               <NextAlarmCard
-                nextAlarm={data.nextAlarm}
+                nextAlarm={nextAlarmFromList(data.activeAlarms, now)}
                 activeCount={data.activeAlarms.length}
                 now={now}
-              />
-              <RoutineSummary
-                routine={data.routine}
-                done={data.routineDone}
-                total={data.routineTotal}
+                active={active}
+                activeAlarmRow={active ? data.activeAlarms.find((alarm) => alarm.id === active.alarmId) ?? null : null}
+                openingChallenge={openingChallenge}
+                challengeError={challengeError}
+                onContinueActiveChallenge={() => { void continueActiveChallenge(); }}
               />
               <TodayStats
                 alarmsRang={data.logsToday}
                 attemptsTotal={data.attemptsToday.total}
                 attemptsCorrect={data.attemptsToday.correct}
-                routinesDone={data.routineDone}
                 attemptsUnavailable={data.attemptsUnavailable}
               />
             </View>
@@ -185,6 +339,16 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: Spacing.half,
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  profileLinkText: {
+    color: '#208AEF',
+    fontWeight: '700',
+    paddingTop: Spacing.one,
+  },
   greeting: {
     fontSize: 28,
     lineHeight: 34,
@@ -195,6 +359,9 @@ const styles = StyleSheet.create({
     color: Danger,
     fontWeight: '700',
     paddingTop: Spacing.one,
+  },
+  signOutError: {
+    color: Danger,
   },
   sections: {
     gap: Spacing.five,

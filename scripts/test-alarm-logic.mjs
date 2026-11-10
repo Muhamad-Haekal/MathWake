@@ -12,8 +12,11 @@
  *
  * Cara pakai:  node scripts/test-alarm-logic.mjs
  */
+import fs from 'node:fs';
+
 import {
   dayNumbersToTokens,
+  createNewAlarmForm,
   decideOnceSchedule,
   isOncePast,
   nowTime,
@@ -21,6 +24,10 @@ import {
   shiftTime,
   splitTimeParts,
   validateAlarmForm,
+  normalizeAlarmTitle,
+  SNOOZE_INTERVALS,
+  DEFAULT_SNOOZE_MINUTES,
+  isSnoozeInterval,
 } from '../src/lib/alarms.ts';
 import {
   describeAlarmSchedule,
@@ -33,6 +40,12 @@ import {
 
 let passed = 0;
 let failed = 0;
+
+check('title trims and falls back', [normalizeAlarmTitle('  Meeting  '), normalizeAlarmTitle('   '), normalizeAlarmTitle(null)], ['Meeting', 'Alarm', 'Alarm']);
+check('default snooze interval is 10 minutes', createNewAlarmForm(new Date(2026, 0, 1)).snooze_minutes, 10);
+check('allowed snooze intervals', SNOOZE_INTERVALS.filter(isSnoozeInterval), [5, 10, 15, 20, 30]);
+check('invalid snooze interval rejected', isSnoozeInterval(7), false);
+check('title over 40 characters is invalid', validateAlarmForm({ ...createNewAlarmForm(), title: 'x'.repeat(41) }, new Date(2026, 0, 1)), 'Judul alarm maksimal 40 karakter.');
 
 function check(name, actual, expected) {
   const a = JSON.stringify(actual);
@@ -164,7 +177,7 @@ check('deskripsi harian', describeAlarmSchedule({ is_recurring: true, days: ['Su
 
 // --- 7. Validasi form dengan jam injeksi (tidak flaky) ---
 check('custom tanpa hari ditolak', validateAlarmForm({ time: '06:00', days: [], is_recurring: true, is_active: true, difficulty: 'sedang', question_count: 3 }, new Date(2026, 9, 11, 5, 0, 0)), 'Pilih minimal satu hari untuk alarm berulang.');
-check('once mendatang sah', validateAlarmForm({ time: '06:00', days: [], is_recurring: false, is_active: true, difficulty: 'sedang', question_count: 3 }, new Date(2026, 9, 11, 5, 0, 0)), null);
+check('once mendatang sah', validateAlarmForm({ ...createNewAlarmForm(), time: '06:00', days: [], is_recurring: false }, new Date(2026, 9, 11, 5, 0, 0)), null);
 check('once lewat ditolak', validateAlarmForm({ time: '06:00', days: [], is_recurring: false, is_active: true, difficulty: 'sedang', question_count: 3 }, new Date(2026, 9, 11, 7, 0, 0)), 'Waktu hari ini sudah lewat. Pilih waktu yang akan datang untuk alarm sekali saja.');
 check('jam tak valid ditolak', validateAlarmForm({ time: '25:00', days: [1], is_recurring: true, is_active: true, difficulty: 'sedang', question_count: 3 }, new Date(2026, 9, 11, 5, 0, 0)), 'Jam tidak valid. Gunakan format 24 jam, misalnya 05:30.');
 
@@ -183,6 +196,18 @@ check('token hari unik terurut', dayNumbersToTokens([5, 1, 5, 9, -1]), ['Mon', '
 check('split HH:MM:SS', splitTimeParts('05:30:00'), { h: 5, m: 30 });
 check('split tak valid', splitTimeParts('99:99'), null);
 check('nowTime format', /^\d{2}:\d{2}$/.test(nowTime(new Date(2026, 0, 1, 7, 5))), true);
+check('alarm baru memakai waktu lokal saat form dibuat', createNewAlarmForm(new Date(2026, 0, 1, 17, 42)).time, '17:42');
+check('buka ulang form baru mengambil waktu lokal terbaru', createNewAlarmForm(new Date(2026, 0, 1, 18, 6)).time, '18:06');
+
+// --- Alarm editor tidak bergantung pada Morning Routine ------------------
+const alarmEditor = fs.readFileSync('src/components/alarms/alarm-editor-modal.tsx', 'utf8');
+check('editor alarm tidak mengimpor Routine', alarmEditor.includes('listRoutineSummary'), false);
+check('editor alarm tetap memiliki validasi form', alarmEditor.includes('validateAlarmForm'), true);
+check('draft baru menggunakan factory waktu lokal', alarmEditor.includes('if (!alarm) return createNewAlarmForm();'), true);
+check('editor remounts dengan draft ketika modal membuka/menutup', /const contentKey = visible \? \(alarm\?\.id \?\? draft\?\.alarmId \?\? 'new'\) : 'closed';[\s\S]*<AlarmEditorContent\s+key=\{contentKey\}/.test(alarmEditor), true);
+check('snooze UI updates form state and displays selected interval', /setForm\(\(current\) => \(\{ \.\.\.current, snooze_minutes: minutes \}\)\)/.test(alarmEditor) && /\{form\.snooze_minutes\} min/.test(alarmEditor), true);
+check('snooze choices render all valid intervals', /SNOOZE_INTERVALS\.map\(\(minutes\)/.test(alarmEditor), true);
+check('cancel closes without calling persistence directly', /onClose\(\)/.test(alarmEditor) && !/onClose\([^)]*form/.test(alarmEditor), true);
 
 console.log(`\nHasil: ${passed} lolos, ${failed} gagal.`);
 process.exit(failed === 0 ? 0 : 1);

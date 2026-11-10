@@ -4,20 +4,33 @@ import type { AlarmRow } from './home-data';
 
 // ---------------------------------------------------------------------------
 // Alarm CRUD data layer. Uses only columns verified against the live schema:
-// id, user_id, time, days, is_active, is_recurring, difficulty,
+// id, user_id, time, days, title, is_active, is_recurring, difficulty,
 // question_count, preset, created_at. Every statement is scoped to the
 // authenticated user id. `preset` is never written (unknown vocabulary,
 // possibly constrained). There is NO date column: one-time alarms mean
 // "next occurrence" (today if the time is still ahead, else tomorrow).
 // ---------------------------------------------------------------------------
 
-const ALARM_COLUMNS =
-  'id,user_id,time,days,is_active,is_recurring,difficulty,question_count,preset,created_at';
+export const ALARM_COLUMNS =
+  'id,user_id,time,days,title,is_active,is_recurring,difficulty,question_count,preset,snooze_minutes,created_at';
 
 const QUERY_LIMIT = 500;
 
 export const DIFFICULTY_OPTIONS = ['mudah', 'sedang', 'sulit'] as const;
 export type Difficulty = (typeof DIFFICULTY_OPTIONS)[number];
+
+export const SNOOZE_INTERVALS = [5, 10, 15, 20, 30] as const;
+export type SnoozeInterval = (typeof SNOOZE_INTERVALS)[number];
+export const DEFAULT_SNOOZE_MINUTES: SnoozeInterval = 10;
+
+export function isSnoozeInterval(value: unknown): value is SnoozeInterval {
+  return typeof value === 'number' && SNOOZE_INTERVALS.some((minutes) => minutes === value);
+}
+
+/** Missing values from legacy rows/drafts use the database default. */
+export function snoozeMinutesOrDefault(value: unknown): SnoozeInterval {
+  return isSnoozeInterval(value) ? value : DEFAULT_SNOOZE_MINUTES;
+}
 
 /** Schedule kinds supported by the current schema (no migration needed). */
 export type ScheduleKind = 'once' | 'daily' | 'custom';
@@ -32,6 +45,8 @@ export const WEEKDAY_PRESETS: { key: string; label: string; days: number[] }[] =
 const DAY_TOKEN_BY_NUMBER = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export interface AlarmForm {
+  /** Optional user-facing label, stored with a safe fallback. */
+  title: string;
   /** "HH:MM" 24-hour. */
   time: string;
   /** Weekday numbers 0 = Sunday .. 6 = Saturday. */
@@ -41,6 +56,7 @@ export interface AlarmForm {
   is_active: boolean;
   difficulty: string;
   question_count: number;
+  snooze_minutes: SnoozeInterval;
 }
 
 /** Derives the schedule kind from stored fields (null = legacy recurring). */
@@ -82,6 +98,20 @@ export function nowTime(at: Date = new Date()): string {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
 }
 
+/** A fresh alarm draft uses the device's local time when the editor opens. */
+export function createNewAlarmForm(at: Date = new Date()): AlarmForm {
+  return {
+    title: '',
+    time: nowTime(at),
+    days: [1, 2, 3, 4, 5],
+    is_recurring: true,
+    is_active: true,
+    difficulty: 'sedang',
+    question_count: 3,
+    snooze_minutes: DEFAULT_SNOOZE_MINUTES,
+  };
+}
+
 /**
  * Indonesian validation message, or null when the form is valid.
  * `now` is injectable so tests can pin the clock; callers default to the
@@ -90,6 +120,7 @@ export function nowTime(at: Date = new Date()): string {
  * an expired event, never "tomorrow".
  */
 export function validateAlarmForm(form: AlarmForm, now: Date = new Date()): string | null {
+  if (typeof form.title === 'string' && form.title.length > 40) return 'Judul alarm maksimal 40 karakter.';
   if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(form.time)) {
     return 'Jam tidak valid. Gunakan format 24 jam, misalnya 05:30.';
   }
@@ -102,6 +133,7 @@ export function validateAlarmForm(form: AlarmForm, now: Date = new Date()): stri
   if (!Number.isInteger(form.question_count) || form.question_count < 1 || form.question_count > 10) {
     return 'Jumlah soal harus antara 1 sampai 10.';
   }
+  if (!isSnoozeInterval(form.snooze_minutes)) return 'Pilih interval Snooze yang tersedia.';
   if (!DIFFICULTY_OPTIONS.includes(form.difficulty as Difficulty)) {
     return 'Pilih level yang tersedia.';
   }
@@ -162,12 +194,14 @@ export async function createAlarm(
     .from('alarms')
     .insert({
       user_id: userId,
+      title: normalizeAlarmTitle(form.title),
       time: `${form.time}:00`,
       days: form.is_recurring ? dayNumbersToTokens(form.days) : [],
       is_active: form.is_active,
       is_recurring: form.is_recurring,
       difficulty: form.difficulty,
       question_count: form.question_count,
+      snooze_minutes: form.snooze_minutes,
     })
     .select(ALARM_COLUMNS)
     .single();
@@ -186,12 +220,14 @@ export async function updateAlarm(
   const { data, error } = await client
     .from('alarms')
     .update({
+      title: normalizeAlarmTitle(form.title),
       time: `${form.time}:00`,
       days: form.is_recurring ? dayNumbersToTokens(form.days) : [],
       is_active: form.is_active,
       is_recurring: form.is_recurring,
       difficulty: form.difficulty,
       question_count: form.question_count,
+      snooze_minutes: form.snooze_minutes,
     })
     .eq('id', alarmId)
     .eq('user_id', userId)
@@ -199,6 +235,11 @@ export async function updateAlarm(
     .single();
   throwIfError(error, 'tidak dapat diubah');
   return data as AlarmRow;
+}
+
+export function normalizeAlarmTitle(title: string | null | undefined): string {
+  const normalized = typeof title === 'string' ? title.trim().slice(0, 40) : '';
+  return normalized || 'Alarm';
 }
 
 export async function setAlarmActive(
@@ -226,32 +267,6 @@ export async function deleteAlarm(
     .eq('id', alarmId)
     .eq('user_id', userId);
   throwIfError(error, 'tidak dapat dihapus');
-}
-
-export interface RoutineSummaryItem {
-  id: string;
-  label: string;
-  sort_order: number;
-}
-
-/**
- * Reads the user's global morning-routine items (display only). Selects
- * an explicit safe column list: the table has a data column literally
- * named `count` that PostgREST parses as an aggregate, so it is omitted
- * here. Routine items are NOT linked per alarm in the current schema.
- */
-export async function listRoutineSummary(
-  client: SupabaseClient,
-  userId: string,
-): Promise<RoutineSummaryItem[]> {
-  const { data, error } = await client
-    .from('routine_items')
-    .select('id,label,sort_order')
-    .eq('user_id', userId)
-    .order('sort_order', { ascending: true })
-    .limit(QUERY_LIMIT);
-  throwIfError(error, 'rutinitas tidak dapat dimuat');
-  return (data ?? []) as RoutineSummaryItem[];
 }
 
 /** Network failures get an Indonesian message; anything else stays generic. */

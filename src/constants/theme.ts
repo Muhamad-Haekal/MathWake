@@ -9,18 +9,18 @@ import { Platform } from 'react-native';
 
 export const Colors = {
   light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
+    text: '#392A25',
+    background: '#F6EFE9',
+    backgroundElement: '#FFFFFF',
+    backgroundSelected: '#F1E2D9',
+    textSecondary: '#947F74',
   },
   dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
+    text: '#F7EDE7',
+    background: '#241D1A',
+    backgroundElement: '#332925',
+    backgroundSelected: '#4B372F',
+    textSecondary: '#C3A99B',
   },
 } as const;
 
@@ -68,8 +68,20 @@ export const MaxContentWidth = 800;
  * Single brand accent for the whole app (taste: color consistency lock).
  * Neutral surfaces come from Colors; this is the only saturated color.
  */
-export const Accent = '#208AEF' as const;
-export const Danger = '#EF4444' as const;
+export const AlarmPalette = {
+  primary: '#D45B32',
+  primaryDark: '#A94120',
+  secondary: '#927B70',
+  tertiary: '#B5A39A',
+  cream: '#F6EFE9',
+  peach: '#FBEDE6',
+  white: '#FFFFFF',
+  darkBrown: '#392A25',
+  border: '#EADBD2',
+} as const;
+
+export const Accent = AlarmPalette.primary;
+export const Danger = '#B74B39' as const;
 
 /**
  * Single corner-radius system (taste: shape consistency lock).

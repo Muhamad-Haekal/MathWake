@@ -9,14 +9,13 @@ interface TodayStatsProps {
   alarmsRang: number;
   attemptsTotal: number;
   attemptsCorrect: number;
-  routinesDone: number;
   /** True when the attempts query was denied: accuracy is unknown, not zero. */
   attemptsUnavailable: boolean;
 }
 
 /**
  * Compact "today" numbers. Every metric is a literal count from
- * alarm_logs, attempts, or routine_completions. When there is no
+ * alarm_logs or attempts. When there is no
  * activity yet, values show "-" with one honest note, never zeros
  * dressed up as insight. When attempts access is denied, that is
  * stated instead of shown as zero activity.
@@ -25,11 +24,10 @@ export function TodayStats({
   alarmsRang,
   attemptsTotal,
   attemptsCorrect,
-  routinesDone,
   attemptsUnavailable,
 }: TodayStatsProps) {
   const theme = useTheme();
-  const hasActivity = alarmsRang > 0 || attemptsTotal > 0 || routinesDone > 0;
+  const hasActivity = alarmsRang > 0 || attemptsTotal > 0;
   const accuracy =
     attemptsTotal > 0 ? `${Math.round((attemptsCorrect / attemptsTotal) * 100)}%` : '-';
 
@@ -53,12 +51,6 @@ export function TodayStats({
               {attemptsCorrect} dari {attemptsTotal}
             </ThemedText>
           ) : null}
-        </View>
-        <View style={styles.cell}>
-          <ThemedText style={styles.value}>{hasActivity ? String(routinesDone) : '-'}</ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            Rutinitas selesai
-          </ThemedText>
         </View>
       </View>
       {!hasActivity && !attemptsUnavailable ? (
