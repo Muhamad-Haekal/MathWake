@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/images/logo.png" alt="Logo MathWake" width="120">
+
 # MathWake
 
 **Aplikasi alarm yang baru berhenti setelah penggunanya menyelesaikan tantangan matematika.**
