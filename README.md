@@ -15,9 +15,9 @@
 
 <br>
 
-**[Pasang Demo](https://expo.dev/accounts/nextherinn/projects/MathWake/builds/eba85465-81a0-4561-a815-14f9e6f5167a)**
-&nbsp;·&nbsp;
-**[Source Code](https://github.com/Muhamad-Haekal/MathWake)**
+<a href="https://expo.dev/accounts/nextherinn/projects/MathWake/builds/eba85465-81a0-4561-a815-14f9e6f5167a"><img src="https://img.shields.io/badge/PASANG_DEMO-FF6B00?style=for-the-badge&logo=expo&logoColor=white" alt="Pasang Demo"></a>
+&nbsp;
+<a href="https://github.com/Muhamad-Haekal/MathWake"><img src="https://img.shields.io/badge/SOURCE_CODE-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code"></a>
 
 <sub>Karya untuk Traspac Competition 2027</sub>
 
@@ -25,16 +25,19 @@
 
 ---
 
-**Daftar isi:**
-[Tentang](#tentang) ·
-[Cara kerja](#cara-kerja) ·
-[Tampilan](#tampilan-aplikasi) ·
-[Fitur](#fitur) ·
-[Memasang dan mencoba demo](#memasang-dan-mencoba-demo) ·
-[Teknologi](#teknologi) ·
-[Status](#status-pengembangan) ·
-[Istilah](#istilah) ·
-[FAQ](#tanya-jawab)
+<div align="center">
+
+<a href="#tentang"><img src="https://img.shields.io/badge/Tentang-30363D?style=flat-square" alt="Tentang"></a>
+<a href="#cara-kerja"><img src="https://img.shields.io/badge/Cara_Kerja-30363D?style=flat-square" alt="Cara Kerja"></a>
+<a href="#tampilan-aplikasi"><img src="https://img.shields.io/badge/Tampilan-30363D?style=flat-square" alt="Tampilan"></a>
+<a href="#fitur"><img src="https://img.shields.io/badge/Fitur-30363D?style=flat-square" alt="Fitur"></a>
+<a href="#memasang-dan-mencoba-demo"><img src="https://img.shields.io/badge/Pasang_dan_Coba-30363D?style=flat-square" alt="Pasang dan Coba"></a>
+<a href="#teknologi"><img src="https://img.shields.io/badge/Teknologi-30363D?style=flat-square" alt="Teknologi"></a>
+<a href="#status-pengembangan"><img src="https://img.shields.io/badge/Status-30363D?style=flat-square" alt="Status"></a>
+<a href="#istilah"><img src="https://img.shields.io/badge/Istilah-30363D?style=flat-square" alt="Istilah"></a>
+<a href="#tanya-jawab"><img src="https://img.shields.io/badge/FAQ-30363D?style=flat-square" alt="FAQ"></a>
+
+</div>
 
 ---
 
@@ -123,7 +126,10 @@ flowchart TD
 
 ### Memasang
 
-1. Buka [link demo MathWake](https://expo.dev/accounts/nextherinn/projects/MathWake/builds/eba85465-81a0-4561-a815-14f9e6f5167a) di HP Android.
+1. Buka link demo di HP Android:
+
+   <a href="https://expo.dev/accounts/nextherinn/projects/MathWake/builds/eba85465-81a0-4561-a815-14f9e6f5167a"><img src="https://img.shields.io/badge/BUKA_LINK_DEMO-FF6B00?style=for-the-badge&logo=expo&logoColor=white" alt="Buka link demo"></a>
+
 2. Ikuti tombol pemasangan pada halaman tersebut untuk mengunduh dan memasang aplikasi.
 3. Jika Android meminta izin memasang aplikasi dari luar Play Store, izinkan.
 4. Buka MathWake. Jika aplikasi meminta izin, misalnya notifikasi, izinkan agar alarm dapat berbunyi tepat waktu.
