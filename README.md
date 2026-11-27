@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/images/logo.png" alt="Logo MathWake" width="120">
+<img src="Mathwake/docs/images/logo.png" alt="Logo MathWake" width="120">
 
 # MathWake
 
