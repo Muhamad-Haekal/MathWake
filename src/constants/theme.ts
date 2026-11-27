@@ -8,19 +8,38 @@ import '@/global.css';
 import { Platform } from 'react-native';
 
 export const Colors = {
+  // Contrast-checked (WCAG AA 4.5:1) against background and backgroundElement.
   light: {
-    text: '#392A25',
-    background: '#F6EFE9',
+    text: '#171614',
+    background: '#F6F4EB',
     backgroundElement: '#FFFFFF',
-    backgroundSelected: '#F1E2D9',
-    textSecondary: '#947F74',
+    backgroundSelected: '#ECE8DE',
+    textSecondary: '#68645E',
+    primary: '#FF6B1F',
+    primaryStrong: '#A83D08',
+    primarySoft: '#FFE5D5',
+    onPrimary: '#171614',
+    border: '#DED9CF',
+    danger: '#B3261E',
+    dangerSoft: '#FBE4E0',
+    success: '#276A43',
+    successSoft: '#E3F1E7',
   },
   dark: {
-    text: '#F7EDE7',
-    background: '#241D1A',
-    backgroundElement: '#332925',
-    backgroundSelected: '#4B372F',
-    textSecondary: '#C3A99B',
+    text: '#F6F4EB',
+    background: '#121212',
+    backgroundElement: '#1E1E1E',
+    backgroundSelected: '#2A2A2A',
+    textSecondary: '#BDB8B0',
+    primary: '#FF7A35',
+    primaryStrong: '#FF9A61',
+    primarySoft: '#3B261B',
+    onPrimary: '#171614',
+    border: '#3A3936',
+    danger: '#F28B82',
+    dangerSoft: '#4A2622',
+    success: '#8EC99D',
+    successSoft: '#1F3A2A',
   },
 } as const;
 
@@ -69,15 +88,15 @@ export const MaxContentWidth = 800;
  * Neutral surfaces come from Colors; this is the only saturated color.
  */
 export const AlarmPalette = {
-  primary: '#D45B32',
-  primaryDark: '#A94120',
-  secondary: '#927B70',
-  tertiary: '#B5A39A',
-  cream: '#F6EFE9',
-  peach: '#FBEDE6',
+  primary: '#FF6B1F',
+  primaryDark: '#A83D08',
+  secondary: '#68645E',
+  tertiary: '#8F8F8F',
+  cream: '#F6F4EB',
+  peach: '#FFE5D5',
   white: '#FFFFFF',
-  darkBrown: '#392A25',
-  border: '#EADBD2',
+  darkBrown: '#121212',
+  border: '#DED9CF',
 } as const;
 
 export const Accent = AlarmPalette.primary;

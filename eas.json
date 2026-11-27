@@ -12,7 +12,13 @@
       "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true
+        "environment": "production",
+        "distribution": "internal",
+        "credentialsSource": "remote",
+        "autoIncrement": true,
+        "android": {
+          "buildType": "apk"
+        }
     }
   },
   "submit": {

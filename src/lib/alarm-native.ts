@@ -296,6 +296,25 @@ export async function getNativeAlarmEvent(eventId: string): Promise<NativeAlarmE
   }
 }
 
+/** Returns only ledger-validated snoozes that are still scheduled for a live source. */
+export async function getNativeLiveScheduledSnoozes(): Promise<NativeAlarmEvent[]> {
+  const mod = await loadNativeAlarm();
+  const getSnoozes = (mod as { getLiveScheduledSnoozes?: () => Promise<NativeAlarmEvent[]> } | null)?.getLiveScheduledSnoozes;
+  if (typeof getSnoozes !== 'function') return [];
+  try {
+    const events = await getSnoozes.call(mod);
+    if (!Array.isArray(events)) return [];
+    return events.filter((event) =>
+      event && typeof event.alarmId === 'string' && typeof event.eventId === 'string' &&
+      typeof event.triggerAtMs === 'number' && Number.isFinite(event.triggerAtMs) &&
+      typeof event.generation === 'string' && event.state === 'scheduled' && event.isSnooze === true &&
+      (event.snoozeMinutes === 5 || event.snoozeMinutes === 10 || event.snoozeMinutes === 15 || event.snoozeMinutes === 20 || event.snoozeMinutes === 30),
+    );
+  } catch {
+    return [];
+  }
+}
+
 /** Applies a generation-checked native lifecycle transition. */
 export async function transitionNativeAlarmEvent(
   eventId: string,

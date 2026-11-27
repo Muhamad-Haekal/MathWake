@@ -1,8 +1,9 @@
+import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 import { StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { SectionHeader } from '@/components/home/section-header';
-import { Spacing } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 interface TodayStatsProps {
@@ -26,32 +27,25 @@ export function TodayStats({
   attemptsCorrect,
   attemptsUnavailable,
 }: TodayStatsProps) {
-  const theme = useTheme();
   const hasActivity = alarmsRang > 0 || attemptsTotal > 0;
   const accuracy =
     attemptsTotal > 0 ? `${Math.round((attemptsCorrect / attemptsTotal) * 100)}%` : '-';
 
   return (
-    <View>
+    <View style={styles.section}>
       <SectionHeader title="Hari ini" />
       <View style={styles.grid}>
-        <View style={styles.cell}>
-          <ThemedText style={styles.value}>{hasActivity ? String(alarmsRang) : '-'}</ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            Alarm berbunyi
-          </ThemedText>
-        </View>
-        <View style={[styles.cell, styles.midCell, { borderLeftColor: theme.backgroundSelected, borderRightColor: theme.backgroundSelected }]}>
-          <ThemedText style={styles.value}>{accuracy}</ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            Soal benar
-          </ThemedText>
-          {attemptsTotal > 0 ? (
-            <ThemedText type="small" themeColor="textSecondary">
-              {attemptsCorrect} dari {attemptsTotal}
-            </ThemedText>
-          ) : null}
-        </View>
+        <StatTile
+          icon={{ ios: 'bell.fill', android: 'notifications', web: 'notifications' }}
+          value={hasActivity ? String(alarmsRang) : '-'}
+          label="Alarm berbunyi"
+        />
+        <StatTile
+          icon={{ ios: 'checkmark.circle.fill', android: 'check_circle', web: 'check_circle' }}
+          value={accuracy}
+          label="Soal benar"
+          detail={attemptsTotal > 0 ? `${attemptsCorrect} dari ${attemptsTotal}` : undefined}
+        />
       </View>
       {!hasActivity && !attemptsUnavailable ? (
         <ThemedText type="small" themeColor="textSecondary" style={styles.note}>
@@ -67,29 +61,54 @@ export function TodayStats({
   );
 }
 
+function StatTile({
+  icon,
+  value,
+  label,
+  detail,
+}: {
+  icon: SymbolViewProps['name'];
+  value: string;
+  label: string;
+  detail?: string;
+}) {
+  const theme = useTheme();
+  return (
+    <View
+      style={[styles.tile, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}
+      accessible
+      accessibilityLabel={`${label}: ${value === '-' ? 'belum ada' : value}${detail ? `, ${detail}` : ''}`}>
+      <View style={[styles.tileIcon, { backgroundColor: theme.primarySoft }]}>
+        <SymbolView name={icon} size={16} tintColor={theme.primaryStrong} />
+      </View>
+      <ThemedText style={styles.value}>{value}</ThemedText>
+      <ThemedText themeColor="textSecondary" style={styles.label}>{label}</ThemedText>
+      {detail ? <ThemedText themeColor="textSecondary" style={styles.detail}>{detail}</ThemedText> : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  grid: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  cell: {
+  section: { gap: Spacing.two },
+  grid: { flexDirection: 'row', gap: Spacing.three },
+  tile: {
     flex: 1,
-    alignItems: 'center',
-    gap: Spacing.half,
-    paddingVertical: Spacing.one,
+    borderRadius: Radius.block,
+    borderWidth: 1,
+    padding: Spacing.three,
+    gap: Spacing.one,
+    minHeight: 120,
   },
-  midCell: {
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderRightWidth: StyleSheet.hairlineWidth,
-  },
+  tileIcon: { width: 32, height: 32, borderRadius: Radius.control - 2, alignItems: 'center', justifyContent: 'center', marginBottom: Spacing.one },
   value: {
     fontSize: 28,
     lineHeight: 34,
-    fontWeight: '700',
+    fontWeight: '800',
     fontVariant: ['tabular-nums'],
   },
+  label: { fontSize: 14, fontWeight: '600' },
+  detail: { fontSize: 13 },
   note: {
-    marginTop: Spacing.two,
     lineHeight: 20,
   },
 });

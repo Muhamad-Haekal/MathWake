@@ -18,6 +18,7 @@ import {
   dayNumbersToTokens,
   createNewAlarmForm,
   decideOnceSchedule,
+  canEnableAlarm,
   isOncePast,
   nowTime,
   scheduleKindOf,
@@ -122,6 +123,16 @@ check('00:00 -60 ke hari sebelumnya', shiftTime('00:00', -60), '23:00');
 check('isOnceExpired lewat', isOnceExpired('06:00:00', new Date(2026, 9, 11, 7, 0, 0)), true);
 check('isOnceExpired mendatang', isOnceExpired('06:00:00', new Date(2026, 9, 11, 5, 0, 0)), false);
 check('isOncePast lewat', isOncePast('06:00', new Date(2026, 9, 11, 7, 0, 0)), true);
+
+// --- 3b. Saklar ON diblokir untuk once yang sudah lewat ---
+{
+  const now = new Date(2026, 9, 11, 7, 0, 0);
+  check('once lewat tidak bisa dinyalakan', canEnableAlarm({ is_recurring: false, time: '06:00:00' }, now), false);
+  check('once tepat di menit berjalan tidak bisa dinyalakan', canEnableAlarm({ is_recurring: false, time: '07:00:00' }, now), false);
+  check('once mendatang bisa dinyalakan', canEnableAlarm({ is_recurring: false, time: '07:01:00' }, now), true);
+  check('alarm berulang nonaktif bisa dinyalakan', canEnableAlarm({ is_recurring: true, time: '06:00:00' }, now), true);
+  check('is_recurring null dianggap berulang', canEnableAlarm({ is_recurring: null, time: '06:00:00' }, now), true);
+}
 
 // --- 4. Home melewati once kedaluwarsa ---
 {

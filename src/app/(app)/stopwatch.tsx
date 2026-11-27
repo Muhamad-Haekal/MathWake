@@ -4,7 +4,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, BottomTabInset, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
+import { androidRipple } from '@/components/ui/android-ripple';
+import { BottomTabInset, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
   createStopwatchState,
@@ -77,7 +78,7 @@ export default function StopwatchScreen() {
   if (!state) {
     return (
       <ThemedView style={styles.center}>
-        <ActivityIndicator color={Accent} />
+          <ActivityIndicator color={theme.primary} />
         <ThemedText type="small" themeColor="textSecondary">Memuat Stopwatch…</ThemedText>
       </ThemedView>
     );
@@ -98,35 +99,38 @@ export default function StopwatchScreen() {
           </ThemedText>
 
           <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
-            <ThemedText style={styles.clock}>{formatStopwatch(elapsedMs)}</ThemedText>
+              <ThemedText style={styles.clock} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{formatStopwatch(elapsedMs)}</ThemedText>
             <ThemedText type="small" themeColor="textSecondary">
               {state.status === 'running' ? 'Berjalan' : state.status === 'paused' ? 'Dijeda' : 'Siap'}
             </ThemedText>
           </View>
 
-          {error ? <ThemedText type="small" style={styles.error}>{error}</ThemedText> : null}
+          {error ? <ThemedText type="small" style={[styles.error, { color: theme.danger }]}>{error}</ThemedText> : null}
 
           <View style={styles.actions}>
             <Pressable
               onPress={() => updateState((current, now) => current.status === 'running' ? pauseStopwatch(current, now) : current.status === 'paused' ? resumeStopwatch(current, now) : startStopwatch(current, now))}
               accessibilityRole="button"
               accessibilityLabel={buttonLabel}
-              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
-              <ThemedText style={styles.primaryText}>{buttonLabel}</ThemedText>
+              android_ripple={androidRipple(theme.onPrimary)}
+              style={({ pressed }) => [styles.primaryButton, { backgroundColor: theme.primary }, pressed && styles.pressed]}>
+              <ThemedText style={[styles.primaryText, { color: theme.onPrimary }]}>{buttonLabel}</ThemedText>
             </Pressable>
             <Pressable
               onPress={() => updateState((current) => recordStopwatchLap(current, Date.now()))}
               disabled={state.status === 'idle'}
               accessibilityRole="button"
               accessibilityLabel="Catat lap"
-              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed, state.status === 'idle' && styles.disabled]}>
+              android_ripple={androidRipple(theme.primarySoft)}
+              style={({ pressed }) => [styles.secondaryButton, { backgroundColor: theme.backgroundSelected }, pressed && styles.pressed, state.status === 'idle' && styles.disabled]}>
               <ThemedText type="smallBold">Lap</ThemedText>
             </Pressable>
             <Pressable
               onPress={() => updateState(() => resetStopwatch())}
               accessibilityRole="button"
               accessibilityLabel="Reset stopwatch"
-              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
+              android_ripple={androidRipple(theme.primarySoft)}
+              style={({ pressed }) => [styles.secondaryButton, { backgroundColor: theme.backgroundSelected }, pressed && styles.pressed]}>
               <ThemedText type="smallBold">Reset</ThemedText>
             </Pressable>
           </View>
@@ -159,13 +163,13 @@ const styles = StyleSheet.create({
   inner: { width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center', paddingHorizontal: Spacing.four, gap: Spacing.three },
   card: { borderRadius: Radius.block, alignItems: 'center', paddingVertical: Spacing.six, gap: Spacing.one },
   clock: { fontSize: 48, lineHeight: 56, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  actions: { flexDirection: 'row', gap: Spacing.two },
-  primaryButton: { flex: 1, backgroundColor: Accent, borderRadius: Radius.control, alignItems: 'center', paddingVertical: Spacing.three },
-  primaryText: { color: '#fff', fontWeight: '700' },
-  secondaryButton: { borderRadius: Radius.control, paddingHorizontal: Spacing.three, paddingVertical: Spacing.three, backgroundColor: '#00000012', alignItems: 'center' },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
+  primaryButton: { flex: 1, minWidth: 120, minHeight: 48, borderRadius: Radius.control, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.three, paddingVertical: Spacing.two },
+  primaryText: { fontWeight: '700' },
+  secondaryButton: { minWidth: 72, minHeight: 48, flexGrow: 1, borderRadius: Radius.control, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, alignItems: 'center', justifyContent: 'center' },
   lapsHeader: { flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#8888', paddingBottom: Spacing.one },
   lapRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: Spacing.two },
-  error: { color: '#d33', lineHeight: 20 },
+  error: { lineHeight: 20 },
   pressed: { opacity: 0.75 },
   disabled: { opacity: 0.45 },
 });

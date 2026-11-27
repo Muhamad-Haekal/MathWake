@@ -11,6 +11,9 @@ import {
 const profileScreen = fs.readFileSync('src/app/profile.tsx', 'utf8');
 const recoveryScreen = fs.readFileSync('src/app/password-recovery.tsx', 'utf8');
 const root = fs.readFileSync('src/app/_layout.tsx', 'utf8');
+const loginScreen = fs.readFileSync('src/app/auth/login.tsx', 'utf8');
+const registerScreen = fs.readFileSync('src/app/auth/register.tsx', 'utf8');
+const themePreference = fs.readFileSync('src/contexts/theme-preference-context.tsx', 'utf8');
 
 assert.equal(PROFILE_DISPLAY_NAME_MAX_LENGTH, 80);
 assert.equal(validateProfileDisplayName('  '), 'Nama harus berisi 1 sampai 80 karakter.');
@@ -33,6 +36,27 @@ assert.match(saveBlock, /setSaved\(true\)/);
 assert.ok(saveBlock.indexOf('setSaved(true)') > saveBlock.indexOf('result.error || !result.data'));
 assert.match(profileScreen, /saveInFlight\.current/);
 assert.match(profileScreen, /router\.push\('\/password-recovery'/);
+assert.doesNotMatch(profileScreen, /SectionHeading title="Profil"/);
+assert.match(profileScreen, /accessibilityLabel="Nama profil"/);
+assert.match(profileScreen, /user\?\.email/);
+assert.match(profileScreen, /SectionHeading title="Keamanan"/);
+assert.match(profileScreen, /SectionHeading title="Tampilan"/);
+assert.match(recoveryScreen, /KEAMANAN AKUN/);
+assert.match(recoveryScreen, /progressTrack/);
+assert.match(recoveryScreen, /accessibilityLabel="Kode OTP"/);
+assert.match(profileScreen, /THEME_OPTIONS\.map/);
+assert.match(profileScreen, /accessibilityRole="radiogroup"/);
+assert.match(profileScreen, /accessibilityRole="radio"/);
+assert.match(root, /<ThemePreferenceProvider>/);
+assert.match(themePreference, /Appearance\.setColorScheme/);
+assert.match(themePreference, /AsyncStorage\.getItem\(THEME_PREFERENCE_KEY\)/);
+assert.match(themePreference, /AsyncStorage\.setItem\(THEME_PREFERENCE_KEY, next\)/);
+assert.match(loginScreen, /assets\/images\/mathwake-mark\.png/);
+assert.match(loginScreen, /assets\/images\/mathwake-mark-light\.png/);
+assert.match(registerScreen, /assets\/images\/mathwake-mark\.png/);
+assert.match(registerScreen, /assets\/images\/mathwake-mark-light\.png/);
+assert.doesNotMatch(loginScreen, /ios: 'alarm\.fill'/);
+assert.doesNotMatch(registerScreen, /ios: 'alarm\.fill'/);
 assert.match(profileScreen, /user\?\.email \?\? 'Email tidak tersedia'/);
 assert.doesNotMatch(profileScreen, /const \[email, setEmail\]/);
 assert.match(profileScreen, /setSaving\(true\);[\s\S]*finally \{[\s\S]*setSaving\(false\)/);
@@ -63,4 +87,4 @@ assert.equal(passwordFormAvailable({ recoveryActive: false, recoveryExpiresAt: n
 assert.equal(passwordFormAvailable({ recoveryActive: true, recoveryExpiresAt: 100, now: 100 }), false);
 assert.equal(passwordFormAvailable({ recoveryActive: true, recoveryExpiresAt: 101, now: 100 }), true);
 
-console.log('Hasil: 39 assertions lulus, 0 gagal.');
+console.log('Hasil: 42 assertions lulus, 0 gagal.');

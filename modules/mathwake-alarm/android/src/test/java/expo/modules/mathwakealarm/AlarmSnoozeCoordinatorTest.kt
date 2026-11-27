@@ -157,6 +157,21 @@ class AlarmSnoozeCoordinatorTest {
   }
 
   @Test
+  fun homeSnapshotShowsOnlyLiveScheduledSnoozesInTriggerOrder() {
+    val store = MemoryStore()
+    val firstSource = ringing(store)
+    val first = runSnooze(store, firstSource).snoozeEvent!!
+    val secondSource = ringing(store, alarmId = "alarm-2", generation = "source-2")
+    val second = runSnooze(store, secondSource, interval = 5).snoozeEvent!!
+    val unrelated = AlarmEventLedger.scheduled("alarm-3", NOW + 100_000, "unrelated")
+    AlarmEventLedger.ensureScheduled(store, unrelated)
+
+    assertEquals(listOf(second, first), AlarmSnoozeCoordinator.liveScheduledSnoozes(store))
+    AlarmEventLedger.transition(store, secondSource.eventId, secondSource.generation, AlarmEventState.COMPLETED)
+    assertEquals(listOf(first), AlarmSnoozeCoordinator.liveScheduledSnoozes(store))
+  }
+
+  @Test
   fun ringingSnoozeOccurrenceCanCreateASeparateContinuation() {
     val store = MemoryStore()
     val firstSource = ringing(store)
@@ -249,20 +264,21 @@ class AlarmSnoozeCoordinatorTest {
     alarmId: String = source.alarmId,
     eventId: String = source.eventId,
     generation: String = source.generation,
+    interval: Int = 10,
     owner: RingerOwnership? = RingerOwnership(source.alarmId, source.eventId, source.generation, 1),
     schedule: (AlarmEvent) -> SnoozeScheduleOutcome = { SnoozeScheduleOutcome(true, true) },
     cancel: (AlarmEvent) -> Unit = {},
     stop: () -> Boolean = { true },
   ) = AlarmSnoozeCoordinator.snooze(
-    store, alarmId, eventId, generation, 10, NOW, owner,
+    store, alarmId, eventId, generation, interval, NOW, owner,
     nextGeneration = { "new-generation-${source.eventId}" },
     schedule = schedule,
     cancel = cancel,
     stop = stop,
   )
 
-  private fun ringing(store: MemoryStore): AlarmEvent {
-    val source = AlarmEventLedger.scheduled("alarm-a", NOW, "source-generation", "mathwake://alarm-reminder", "tone://test")
+  private fun ringing(store: MemoryStore, alarmId: String = "alarm-a", generation: String = "source-generation"): AlarmEvent {
+    val source = AlarmEventLedger.scheduled(alarmId, NOW, generation, "mathwake://alarm-reminder", "tone://test")
     AlarmEventLedger.ensureScheduled(store, source)
     AlarmEventLedger.transition(store, source.eventId, source.generation, AlarmEventState.RINGING)
     return AlarmEventLedger.get(store, source.eventId)!!

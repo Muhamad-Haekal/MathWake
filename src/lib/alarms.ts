@@ -140,13 +140,25 @@ export function validateAlarmForm(form: AlarmForm, now: Date = new Date()): stri
   return null;
 }
 
-/** True when a one-time "HH:MM" time already passed relative to `now`. */
+/** True when a one-time "HH:MM" (or DB "HH:MM:SS") time already passed relative to `now`. */
 export function isOncePast(time: string, now: Date): boolean {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(time.trim());
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(time.trim());
   if (!match) return false;
   const candidate = new Date(now);
-  candidate.setHours(parseInt(match[1], 10), parseInt(match[2], 10), 0, 0);
+  candidate.setHours(parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3] ?? '0', 10), 0);
   return candidate.getTime() <= now.getTime();
+}
+
+/**
+ * A one-time alarm whose time already passed can never be armed again: the
+ * scheduler reports it as expired and deactivates it on the next sync. The UI
+ * must block the ON action instead of silently reverting the switch.
+ */
+export function canEnableAlarm(
+  alarm: { is_recurring: boolean | null; time: string },
+  now: Date = new Date(),
+): boolean {
+  return !(alarm.is_recurring === false && isOncePast(alarm.time, now));
 }
 
 export type OnceDecision = 'preserve' | 'fresh' | 'expired';
@@ -248,12 +260,19 @@ export async function setAlarmActive(
   alarmId: string,
   isActive: boolean,
 ): Promise<void> {
-  const { error } = await client
+  const { data, error } = await client
     .from('alarms')
     .update({ is_active: isActive })
     .eq('id', alarmId)
-    .eq('user_id', userId);
+    .eq('user_id', userId)
+    .select('id');
   throwIfError(error, isActive ? 'tidak dapat dinyalakan' : 'tidak dapat dimatikan');
+  // PostgREST returns no error when the filter matches zero rows (wrong owner,
+  // stale id, or a blocking policy). Without this check the switch would snap
+  // back with no explanation, so surface it as a real failure.
+  if (!data || data.length === 0) {
+    throw new Error('Alarm tidak ditemukan atau tidak boleh diubah.');
+  }
 }
 
 export async function deleteAlarm(

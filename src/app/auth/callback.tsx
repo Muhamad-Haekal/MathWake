@@ -2,28 +2,36 @@ import { router, Stack } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
+import { Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
+import { useTheme } from '@/hooks/use-theme';
 
 export default function AuthCallbackScreen() {
   const { recoveryActive, user } = useAuth();
+  const theme = useTheme();
+  const primary = ({ pressed }: { pressed: boolean }) => [
+    styles.button,
+    { backgroundColor: theme.primary },
+    pressed && styles.pressed,
+  ];
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
       <Stack.Screen options={{ headerShown: false }} />
-      <ThemedText type="subtitle">Tautan belum dapat diproses</ThemedText>
-      <ThemedText type="small" style={styles.message}>
+      <ThemedText type="subtitle" style={styles.message}>Tautan belum dapat diproses</ThemedText>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.message}>
         Tautan mungkin kedaluwarsa atau tidak valid. Kamu dapat memulai pemulihan password lagi.
       </ThemedText>
       {recoveryActive && (
-        <Pressable style={styles.button} onPress={() => router.replace('/password-recovery')} accessibilityRole="button">
-          <ThemedText style={styles.buttonText}>Lanjutkan pemulihan</ThemedText>
+        <Pressable style={primary} onPress={() => router.replace('/password-recovery')} accessibilityRole="button">
+          <ThemedText style={[styles.buttonText, { color: theme.onPrimary }]}>Lanjutkan pemulihan</ThemedText>
         </Pressable>
       )}
-      <Pressable style={styles.button} onPress={() => router.replace('/password-recovery')} accessibilityRole="button">
-        <ThemedText style={styles.buttonText}>Minta tautan baru</ThemedText>
+      <Pressable style={primary} onPress={() => router.replace('/password-recovery')} accessibilityRole="button">
+        <ThemedText style={[styles.buttonText, { color: theme.onPrimary }]}>Minta tautan baru</ThemedText>
       </Pressable>
       {!user && (
-        <Pressable onPress={() => router.replace('/auth/login')} accessibilityRole="link">
-          <ThemedText style={styles.link}>Kembali ke login</ThemedText>
+        <Pressable onPress={() => router.replace('/auth/login')} accessibilityRole="link" hitSlop={12}>
+          <ThemedText style={[styles.link, { color: theme.primaryStrong }]}>Kembali ke login</ThemedText>
         </Pressable>
       )}
     </View>
@@ -35,11 +43,19 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
-    gap: 16,
+    padding: Spacing.four,
+    gap: Spacing.three,
   },
   message: { textAlign: 'center' },
-  button: { width: '100%', alignItems: 'center', backgroundColor: '#208AEF', borderRadius: 14, padding: 15 },
-  buttonText: { color: '#ffffff', fontWeight: '700' },
-  link: { color: '#208AEF', fontWeight: '600' },
+  button: {
+    width: '100%',
+    minHeight: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.control,
+    padding: 15,
+  },
+  pressed: { opacity: 0.85 },
+  buttonText: { fontWeight: '700', fontSize: 16 },
+  link: { fontWeight: '600' },
 });

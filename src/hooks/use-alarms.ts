@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 
 import { useAuth } from '@/contexts/auth-context';
 import {
@@ -17,6 +18,7 @@ import {
     getNativeLiveAlarmIds,
 } from '@/lib/alarm-native';
 import { getAlarmSession } from '@/lib/alarm-session';
+import { cacheAlarmChallengeConfigs, removeAlarmChallengeConfig, saveAlarmChallengeConfig } from '@/lib/alarm-challenge-config';
 import type { AlarmRow } from '@/lib/home-data';
 import {
     ensureSchedulePermission,
@@ -48,7 +50,7 @@ interface AlarmsState {
   busyId: string | null;
   refresh: () => Promise<void>;
   saveAlarm: (form: AlarmForm, alarmId?: string, ringtone?: AlarmRingtone) => Promise<AlarmRow | null>;
-  toggleAlarm: (alarm: AlarmRow, isActive: boolean) => Promise<void>;
+  toggleAlarm: (alarm: AlarmRow, isActive: boolean) => Promise<boolean>;
   removeAlarm: (alarmId: string) => Promise<void>;
   requestPermission: () => Promise<void>;
   openExactAlarmSettings: () => Promise<void>;
@@ -87,6 +89,7 @@ type LoadAction =
   | { type: 'FETCH_ERROR'; message: string }
   | { type: 'FETCH_DONE' }
   | { type: 'NO_USER' }
+  | { type: 'SET_ALARM_ACTIVE'; alarmId: string; isActive: boolean }
   | { type: 'SET_PERMISSION'; permission: SchedulePermission };
 
 const initialLoadState: LoadState = {
@@ -121,6 +124,13 @@ function loadReducer(state: LoadState, action: LoadAction): LoadState {
       };
     case 'FETCH_ERROR':
       return { ...state, error: action.message };
+    case 'SET_ALARM_ACTIVE':
+      return {
+        ...state,
+        alarms: state.alarms.map((alarm) =>
+          alarm.id === action.alarmId ? { ...alarm, is_active: action.isActive } : alarm,
+        ),
+      };
     case 'FETCH_DONE':
       return { ...state, isLoading: false, isRefreshing: false };
     case 'NO_USER':
@@ -230,6 +240,8 @@ async function fetchAlarms(
   try {
     const rows = await listAlarms(supabase, userId);
     // Check after every await — user may have changed or component unmounted.
+    if (token.cancelled) return;
+    await cacheAlarmChallengeConfigs(rows).catch(() => undefined);
     if (token.cancelled) return;
 
     const perm = await getSchedulePermission();
@@ -381,6 +393,16 @@ export function useAlarms(): AlarmsState {
     };
   }, [authLoading, user, runFetch]);
 
+  // Re-check permissions and schedules when the app returns from background / Settings.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && !authLoading && user) {
+        void runFetch(user.id, 'refresh');
+      }
+    });
+    return () => subscription.remove();
+  }, [authLoading, user, runFetch]);
+
   const refresh = useCallback(async () => {
     if (authLoading || !user) return;
     await runFetch(user.id, 'refresh');
@@ -440,6 +462,12 @@ export function useAlarms(): AlarmsState {
         const row = alarmId
           ? await updateAlarm(supabase, user.id, alarmId, form)
           : await createAlarm(supabase, user.id, form);
+        await saveAlarmChallengeConfig({
+          alarmId: row.id,
+          difficulty: form.difficulty,
+          question_count: form.question_count,
+          title: row.title ?? form.title ?? 'Alarm',
+        });
         // Persist the per-alarm ringtone before mutate() reloads and resyncs
         // schedules. Otherwise the scheduler reads the previous/default tone.
         if (ringtone) {
@@ -466,16 +494,32 @@ export function useAlarms(): AlarmsState {
   );
 
   const toggleAlarm = useCallback(
-    (alarm: AlarmRow, isActive: boolean) => {
-      if (!user) return Promise.resolve();
-      return mutate(alarm.id, async () => {
+    async (alarm: AlarmRow, isActive: boolean) => {
+      if (!user) return Promise.resolve(false);
+      const previousActive = alarm.is_active;
+
+      // Update the controlled switch and its list section immediately. The
+      // async mutation below still persists and resyncs the authoritative data.
+      // Cancel a refresh already in flight so it cannot briefly overwrite the
+      // optimistic value with stale server data.
+      currentToken.current.cancelled = true;
+      dispatch({ type: 'SET_ALARM_ACTIVE', alarmId: alarm.id, isActive });
+
+      const result = await mutate(alarm.id, async () => {
         if (!isActive) {
           await unscheduleAlarm(alarm.id);
         } else {
           await forgetScheduleTarget(alarm.id);
         }
         await setAlarmActive(supabase, user.id, alarm.id, isActive);
-      }).then(() => undefined);
+      });
+
+      if (result === null) {
+        dispatch({ type: 'SET_ALARM_ACTIVE', alarmId: alarm.id, isActive: previousActive });
+        return false;
+      }
+
+      return true;
     },
     [user, mutate],
   );
@@ -486,6 +530,7 @@ export function useAlarms(): AlarmsState {
       return mutate(alarmId, async () => {
         await unscheduleAlarm(alarmId);
         await deleteAlarm(supabase, user.id, alarmId);
+        await removeAlarmChallengeConfig(alarmId);
         await removeAlarmRingtone(alarmId);
       }).then(() => undefined);
     },

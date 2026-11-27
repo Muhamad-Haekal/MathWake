@@ -34,5 +34,11 @@
       android:name="expo.modules.mathwakealarm.AlarmRingerService"
       android:exported="false"
       android:foregroundServiceType="mediaPlayback" />
+
+    <!-- Timer has an isolated audio owner and cannot claim alarm state. -->
+    <service
+      android:name="expo.modules.mathwakealarm.TimerRingerService"
+      android:exported="false"
+      android:foregroundServiceType="mediaPlayback" />
   </application>
 </manifest>

@@ -53,7 +53,7 @@ internal object AlarmEventQueue {
       .sortedWith(compareBy<AlarmEvent> { it.triggerAtMs }.thenBy { it.eventId })
 
     for (event in queued) {
-      if (nowMs < event.triggerAtMs) return null
+      if (nowMs + 1000L < event.triggerAtMs) return null
       if (isExpired(event, nowMs)) {
         AlarmEventLedger.transition(store, event.eventId, event.generation, AlarmEventState.EXPIRED)
         continue

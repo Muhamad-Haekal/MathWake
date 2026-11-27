@@ -73,3 +73,19 @@ export function cancelNativeTimer(): Promise<void> {
     }
   });
 }
+
+/** Stops only Timer playback and its notification; never touches alarm ringer state. */
+export function dismissNativeTimerSound(): Promise<void> {
+  return enqueue(async () => {
+    if (Platform.OS !== 'android' || isExpoGo()) return;
+    const mod = await loadNativeAlarm();
+    if (!mod || typeof mod.dismissTimerRinger !== 'function') return;
+    try {
+      await mod.dismissTimerRinger();
+    } catch (error) {
+      console.warn('[MathWake][NativeTimer] dismiss sound failed:', {
+        message: error instanceof Error ? error.message : 'unknown',
+      });
+    }
+  });
+}

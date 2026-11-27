@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { NativeAlarmEvent } from '../../modules/mathwake-alarm/src/types';
 
 // ---------------------------------------------------------------------------
 // Home dashboard data layer.
@@ -45,6 +46,25 @@ export interface AttemptRow {
 export interface NextAlarm {
   alarm: AlarmRow;
   at: Date;
+}
+
+/** Joins a live native snooze to an enabled alarm row for truthful Home status. */
+export function resolveHomeSnooze(
+  events: NativeAlarmEvent[],
+  alarms: AlarmRow[],
+  now: Date,
+): { alarm: AlarmRow; triggerAtMs: number; snoozeMinutes: number } | null {
+  const knownAlarms = new Map(alarms.map((alarm) => [alarm.id, alarm]));
+  const validIntervals = new Set([5, 10, 15, 20, 30]);
+  const event = events
+    .filter((candidate) =>
+      candidate.state === 'scheduled' && candidate.isSnooze === true &&
+      typeof candidate.triggerAtMs === 'number' && Number.isFinite(candidate.triggerAtMs) && candidate.triggerAtMs > now.getTime() &&
+      typeof candidate.snoozeMinutes === 'number' && validIntervals.has(candidate.snoozeMinutes) && knownAlarms.has(candidate.alarmId),
+    )
+    .sort((a, b) => a.triggerAtMs - b.triggerAtMs)[0];
+  if (!event || typeof event.snoozeMinutes !== 'number') return null;
+  return { alarm: knownAlarms.get(event.alarmId)!, triggerAtMs: event.triggerAtMs, snoozeMinutes: event.snoozeMinutes };
 }
 
 export interface HomeData {

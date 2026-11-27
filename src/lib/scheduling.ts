@@ -8,6 +8,7 @@ import { Platform } from 'react-native';
 
 import { decideOnceSchedule, splitTimeParts } from './alarms';
 import { startAlarmAudio } from './alarm-audio';
+import { getAlarmChallengeConfig, saveAlarmChallengeConfig, type AlarmChallengeConfig } from './alarm-challenge-config';
 import {
   acknowledgeNativePendingAlarm,
   PENDING_RECENCY_MS,
@@ -637,36 +638,59 @@ export async function enterReminderFromAlarm(
     }
     lastChallengeEntry = { eventId: identity.eventId, at: now };
 
-    const userId = await deps.getUserId();
-    if (!userId) {
-      console.warn('[MathWake][Schedule] challenge entry: no authenticated user', {
-        alarmId,
-        source,
-      });
-      return;
+    console.info('[MathWakeDiag]', {
+      stage: 'reminder.launch.requested',
+      alarmId,
+      eventId: identity.eventId,
+      source,
+      timestampMs: now,
+    });
+
+    // Start audio asynchronously so it begins playing without blocking the navigation handoff.
+    void startAlarmAudio(alarmId, identity.eventId, identity.generation).catch(() => undefined);
+
+    // Fast-path configuration lookup: query Supabase with a short timeout (max 300ms)
+    // so an offline device, airplane mode, or network latency NEVER stalls the reminder UI.
+    let config = await getAlarmChallengeConfig(alarmId);
+    try {
+      const userPromise = deps.getUserId();
+      const userId = await Promise.race([
+        userPromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+      ]);
+      if (userId) {
+        const fetchedConfig = await Promise.race([
+          deps.fetchAlarmConfig(userId, alarmId),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
+        ]);
+        if (
+          fetchedConfig &&
+          (fetchedConfig.difficulty === 'mudah' || fetchedConfig.difficulty === 'sedang' || fetchedConfig.difficulty === 'sulit') &&
+          Number.isInteger(fetchedConfig.question_count) && fetchedConfig.question_count >= 1 && fetchedConfig.question_count <= 10
+        ) {
+          const freshConfig: AlarmChallengeConfig = {
+            alarmId,
+            difficulty: fetchedConfig.difficulty as AlarmChallengeConfig['difficulty'],
+            question_count: fetchedConfig.question_count,
+            title: fetchedConfig.title,
+          };
+          config = freshConfig;
+          void saveAlarmChallengeConfig(freshConfig).catch(() => undefined);
+        }
+      }
+    } catch {
+      // Keep the last saved config when the network or auth lookup fails.
     }
 
-    const config = await deps.fetchAlarmConfig(userId, alarmId);
-    if (!config) {
-      console.warn('[MathWake][Schedule] challenge entry: alarm not found or not owned', {
-        alarmId,
-        source,
-      });
-      return;
-    }
-
-    // Start audio before navigating to the reminder. The reminder is the
-    // deliberate user handoff into the challenge, including after unlock.
-    // startAlarmAudio is idempotent — calling it twice for the same alarmId
-    // is a no-op, so it won't start a second player if the user taps the
-    // notification again while challenge is open.
-    await startAlarmAudio(alarmId, identity.eventId, identity.generation);
+    const alarmTitle = config?.title?.trim()?.slice(0, 40) || 'Alarm';
+    const difficulty = config?.difficulty || 'sedang';
+    const questionCount = String(config?.question_count ?? 3);
 
     deps.navigateToReminder({
       alarmId,
-      alarmTitle: config.title.trim().slice(0, 40) || 'Alarm',
-      difficulty: config.difficulty,
-      questionCount: String(config.question_count),
+      alarmTitle,
+      difficulty,
+      questionCount,
       // No per-alarm time/mistake limits in current schema — kept as 0.
       timeLimitSeconds: '0',
       maxMistakes: '0',

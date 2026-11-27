@@ -12,10 +12,11 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 
 import { AlarmEditorModal } from '@/components/alarms/alarm-editor-modal';
 import { SectionHeader } from '@/components/home/section-header';
+import { androidRipple } from '@/components/ui/android-ripple';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, BottomTabInset, Danger, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
@@ -28,7 +29,7 @@ import {
   saveAlarmEditorDraft,
   type AlarmEditorDraft,
 } from '@/lib/alarm-editor-draft';
-import { type AlarmForm } from '@/lib/alarms';
+import { canEnableAlarm, type AlarmForm } from '@/lib/alarms';
 import type { AlarmRingtone } from '@/lib/alarm-ringtones';
 import { describeAlarmSchedule, formatTimeID, isOnceExpired, type AlarmRow } from '@/lib/home-data';
 import { initChallengeNotificationHandler } from '@/lib/scheduling';
@@ -131,6 +132,12 @@ export default function AlarmsScreen() {
     });
   }, []);
 
+  useFocusEffect(
+    useCallback(() => {
+      void refresh();
+    }, [refresh]),
+  );
+
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') void refresh();
@@ -213,8 +220,9 @@ export default function AlarmsScreen() {
               onPress={openCreate}
               accessibilityRole="button"
               accessibilityLabel="Tambah alarm baru"
+              android_ripple={androidRipple(theme.onPrimary)}
               style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}>
-              <ThemedText type="small" style={styles.addText}>+ Tambah</ThemedText>
+              <ThemedText type="small" style={[styles.addText, { color: theme.onPrimary }]}>＋ Tambah alarm</ThemedText>
             </Pressable>
           </View>
 
@@ -277,6 +285,15 @@ export default function AlarmsScreen() {
             <ThemedText type="small" themeColor="textSecondary">{scheduleNote}</ThemedText>
           ) : null}
 
+          {error && alarms.length > 0 ? (
+            <View style={[styles.notice, { backgroundColor: theme.backgroundElement, borderColor: theme.danger, borderWidth: 1 }]}>
+              <ThemedText type="small" style={styles.noticeText}>{error}</ThemedText>
+              <Pressable onPress={refresh} accessibilityRole="button" accessibilityLabel="Coba muat ulang">
+                <ThemedText type="small" style={styles.linkText}>Coba lagi</ThemedText>
+              </Pressable>
+            </View>
+          ) : null}
+
           {isLoading ? (
             <AlarmsSkeleton />
           ) : error && alarms.length === 0 ? (
@@ -289,32 +306,54 @@ export default function AlarmsScreen() {
                 style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
                 onPress={refresh}
                 accessibilityRole="button"
-                accessibilityLabel="Coba muat ulang">
+                accessibilityLabel="Coba muat ulang"
+                android_ripple={androidRipple(theme.onPrimary)}>
                 <ThemedText type="small" style={styles.retryText}>Coba lagi</ThemedText>
               </Pressable>
             </View>
           ) : alarms.length === 0 ? (
-            <View style={styles.empty}>
+            <View style={[styles.empty, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
               <ThemedText type="smallBold" style={styles.emptyTitle}>Belum ada alarm</ThemedText>
               <ThemedText type="small" themeColor="textSecondary" style={styles.emptyBody}>
                 Tambah alarm pertamamu supaya MathWake membangunkanmu tepat waktu.
               </ThemedText>
+              <Pressable onPress={openCreate} accessibilityRole="button" android_ripple={androidRipple(theme.onPrimary)} style={({ pressed }) => [styles.emptyButton, pressed && styles.pressed]}>
+                <ThemedText type="small" style={[styles.addText, { color: theme.onPrimary }]}>Buat alarm pertama</ThemedText>
+              </Pressable>
             </View>
           ) : (
-            <View>
-              <SectionHeader title="Semua alarm" />
-              <View>
-                {alarms.map((alarm, index) => (
-                  <AlarmRowView
-                    key={alarm.id}
-                    alarm={alarm}
-                    showDivider={index > 0}
-                    busy={busyId === alarm.id}
-                    onOpen={() => openEdit(alarm)}
-                    onToggle={(active) => toggleAlarm(alarm, active)}
-                  />
-                ))}
-              </View>
+            <View style={styles.alarmGroups}>
+              {([true, false] as const).map((active) => {
+                const group = alarms.filter((alarm) => alarm.is_active === active);
+                if (group.length === 0) return null;
+                return (
+                  <View key={String(active)} style={styles.group}>
+                    <View style={styles.groupHeading}>
+                      <SectionHeader title={active ? 'Aktif' : 'Nonaktif'} />
+                      <ThemedText type="small" themeColor="textSecondary" style={styles.groupCount}>
+                        {group.length}
+                      </ThemedText>
+                    </View>
+                    <View style={styles.alarmList}>
+                      {group.map((alarm) => (
+                        <AlarmRowView
+                          key={alarm.id}
+                          alarm={alarm}
+                          busy={busyId === alarm.id}
+                          onOpen={() => openEdit(alarm)}
+                          onToggle={(nextActive) => {
+                            if (nextActive && !canEnableAlarm(alarm)) {
+                              openEdit(alarm);
+                              return;
+                            }
+                            void toggleAlarm(alarm, nextActive);
+                          }}
+                        />
+                      ))}
+                    </View>
+                  </View>
+                );
+              })}
             </View>
           )}
         </View>
@@ -336,13 +375,11 @@ export default function AlarmsScreen() {
 
 function AlarmRowView({
   alarm,
-  showDivider,
   busy,
   onOpen,
   onToggle,
 }: {
   alarm: AlarmRow;
-  showDivider: boolean;
   busy: boolean;
   onOpen: () => void;
   onToggle: (active: boolean) => void;
@@ -351,42 +388,65 @@ function AlarmRowView({
   // Expired one-time alarm: its moment passed, so it will never ring again
   // until edited with a new future time. Shown distinctly from user-off.
   const expiredOnce = alarm.is_recurring === false && isOnceExpired(alarm.time, new Date());
-  const meta = [expiredOnce ? 'Kedaluwarsa' : describeAlarmSchedule(alarm)];
-  if (alarm.difficulty) meta.push(`Level ${alarm.difficulty}`);
-  if (typeof alarm.question_count === 'number') meta.push(`${alarm.question_count} soal`);
+  const canEnable = canEnableAlarm(alarm);
+  // Block only turning ON: an alarm that is still on (e.g. mid-refresh) must
+  // remain switchable off. The list cannot arm an expired occurrence.
+  const enableBlocked = !alarm.is_active && !canEnable;
+  const title = typeof alarm.title === 'string' ? alarm.title.trim() || 'Alarm' : 'Alarm';
 
   return (
-    <View
-      style={[
-        styles.row,
-        showDivider && {
-          borderTopWidth: StyleSheet.hairlineWidth,
-          borderTopColor: theme.backgroundSelected,
-        },
-      ]}>
+    <View style={[styles.row, { backgroundColor: theme.backgroundElement, borderColor: theme.border }, !alarm.is_active && styles.inactiveRow]}>
+      <View style={[styles.rowAccent, { backgroundColor: alarm.is_active ? theme.primary : theme.border }]} />
       <Pressable
         onPress={onOpen}
         accessibilityRole="button"
-        accessibilityLabel={`Ubah alarm ${formatTimeID(alarm.time)}`}
+        accessibilityLabel={`${formatTimeID(alarm.time)}, ${title}, ${expiredOnce ? 'alarm terlewat' : alarm.is_active ? 'aktif' : 'nonaktif'}, ${describeAlarmSchedule(alarm)}, tantangan matematika ${alarm.difficulty ?? 'sedang'}, ${alarm.question_count ?? 3} soal`}
+        accessibilityHint={enableBlocked ? 'Ubah jam alarm untuk menyalakan lagi' : undefined}
+        android_ripple={androidRipple(theme.primarySoft)}
         style={({ pressed }) => [styles.rowMain, pressed && styles.pressed]}>
-        <ThemedText style={[styles.rowTime, !alarm.is_active && { color: theme.textSecondary }]}>
-          {formatTimeID(alarm.time)}
+        <View style={styles.rowHeading}>
+          <ThemedText style={[styles.rowTime, !alarm.is_active && { color: theme.textSecondary }]}>
+            {formatTimeID(alarm.time)}
+          </ThemedText>
+          <View style={[styles.statusPill, { backgroundColor: alarm.is_active ? theme.successSoft : theme.background }]}>
+            <ThemedText style={[styles.statusText, { color: alarm.is_active ? theme.success : theme.textSecondary }]}>{expiredOnce ? 'Lewat' : alarm.is_active ? 'Aktif' : 'Nonaktif'}</ThemedText>
+          </View>
+        </View>
+        <ThemedText style={[styles.alarmTitle, { color: theme.text }]}>
+          {title}
         </ThemedText>
-        <ThemedText type="smallBold" numberOfLines={1} style={{ color: theme.text }}>
-          {typeof alarm.title === 'string' ? alarm.title.trim() || 'Alarm' : 'Alarm'}
+        <ThemedText style={[styles.schedule, { color: theme.textSecondary }]}>
+          {expiredOnce ? 'Sekali · sudah lewat — ubah jam untuk menyalakan lagi' : describeAlarmSchedule(alarm)}
         </ThemedText>
-        <ThemedText type="small" themeColor="textSecondary">
-          {meta.join('   ')}
-        </ThemedText>
+        <View style={[styles.challengeSummary, { backgroundColor: theme.background }]}>
+          <ThemedText style={[styles.challengeLabel, { color: theme.textSecondary }]}>TANTANGAN</ThemedText>
+          <ThemedText style={[styles.challengeValue, { color: theme.text }]}>
+            {alarm.difficulty ?? 'Sedang'}
+          </ThemedText>
+          <View style={[styles.challengeDivider, { backgroundColor: theme.border }]} />
+          <ThemedText style={[styles.challengeValue, { color: theme.text }]}>
+            {alarm.question_count ?? 3} soal
+          </ThemedText>
+        </View>
       </Pressable>
 
       <View style={styles.rowActions}>
         <Switch
           value={alarm.is_active}
-          disabled={busy}
+          disabled={busy || enableBlocked}
           onValueChange={onToggle}
           trackColor={{ false: theme.backgroundSelected, true: Accent }}
-          accessibilityLabel={alarm.is_active ? 'Matikan alarm' : 'Nyalakan alarm'}
+          thumbColor={alarm.is_active ? '#ffffff' : theme.backgroundElement}
+          accessibilityLabel={
+            enableBlocked
+              ? 'Alarm sekali saja sudah lewat, ubah jam untuk menyalakan'
+              : alarm.is_active
+                ? 'Matikan alarm'
+                : 'Nyalakan alarm'
+          }
+          accessibilityState={{ disabled: busy || enableBlocked, checked: alarm.is_active }}
+          accessibilityRole="switch"
+          hitSlop={8}
         />
       </View>
     </View>
@@ -418,6 +478,11 @@ const styles = StyleSheet.create({
     maxWidth: MaxContentWidth,
     gap: Spacing.four,
   },
+  alarmGroups: { gap: Spacing.five },
+  group: { gap: Spacing.two },
+  groupHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  groupCount: { minWidth: 30, textAlign: 'right', fontVariant: ['tabular-nums'] },
+  alarmList: { gap: Spacing.three },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -432,10 +497,11 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
   },
   addButton: {
+    minHeight: 48,
     backgroundColor: Accent,
-    borderRadius: Radius.chip,
+    borderRadius: Radius.control,
     paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two + Spacing.half,
+    paddingVertical: Spacing.three,
     marginTop: Spacing.one,
   },
   addText: { color: '#ffffff', fontWeight: '700' },
@@ -447,21 +513,33 @@ const styles = StyleSheet.create({
   noticeText: { lineHeight: 20 },
   linkText: { color: Accent, fontWeight: '700' },
   row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingVertical: Spacing.two + Spacing.half,
+    flexDirection: 'row', alignItems: 'stretch', gap: Spacing.three,
+    padding: Spacing.three, borderWidth: 1, borderRadius: Radius.block + 2,
   },
-  rowMain: { flex: 1, gap: Spacing.half },
+  inactiveRow: { opacity: 0.82 },
+  rowAccent: { width: 3, borderRadius: 2, marginVertical: 2 },
+  rowMain: { flex: 1, minWidth: 0, gap: Spacing.one },
+  rowHeading: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, flexWrap: 'wrap' },
+  statusPill: { minHeight: 24, justifyContent: 'center', borderRadius: Radius.chip, paddingHorizontal: Spacing.two },
+  statusText: { fontSize: 11, fontWeight: '700' },
+  alarmTitle: { fontSize: 16, lineHeight: 21, fontWeight: '700' },
+  schedule: { fontSize: 13, lineHeight: 18, fontWeight: '500' },
+  challengeSummary: { alignSelf: 'flex-start', minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, borderRadius: Radius.control, paddingHorizontal: Spacing.two },
+  challengeLabel: { fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
+  challengeValue: { fontSize: 12, fontWeight: '700' },
+  challengeDivider: { width: 1, height: 16 },
   rowActions: {
+    minWidth: 48,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: Spacing.two,
   },
   rowTime: {
-    fontSize: 32,
-    lineHeight: 36,
-    fontWeight: '700',
+    fontSize: 38,
+    lineHeight: 44,
+    fontWeight: '800',
+    letterSpacing: -0.8,
     fontVariant: ['tabular-nums'],
   },
   errorCard: {
@@ -471,6 +549,7 @@ const styles = StyleSheet.create({
   },
   errorBody: { lineHeight: 20 },
   retryButton: {
+    minHeight: 48,
     backgroundColor: Danger,
     borderRadius: Radius.control,
     paddingVertical: Spacing.three,
@@ -478,7 +557,8 @@ const styles = StyleSheet.create({
     marginTop: Spacing.one,
   },
   retryText: { color: '#ffffff', fontWeight: '700' },
-  empty: { gap: Spacing.one, paddingVertical: Spacing.four },
+  empty: { gap: Spacing.two, padding: Spacing.four, borderRadius: Radius.block, borderWidth: StyleSheet.hairlineWidth },
+  emptyButton: { minHeight: 48, alignSelf: 'flex-start', backgroundColor: Accent, borderRadius: Radius.control, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, justifyContent: 'center' },
   emptyTitle: { fontSize: 17, lineHeight: 24 },
   emptyBody: { lineHeight: 20 },
   skeletonWrap: { gap: Spacing.two },

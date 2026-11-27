@@ -8,15 +8,19 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.media.AudioManager
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
 import java.util.Calendar
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 // ---------------------------------------------------------------------------
 // Native alarm backend for MathWake (Android).
@@ -41,6 +45,7 @@ internal const val ACTION_FIRE_ALARM = "expo.modules.mathwakealarm.ACTION_FIRE_A
 internal const val ACTION_FIRE_SNOOZE = "expo.modules.mathwakealarm.ACTION_FIRE_SNOOZE"
 internal const val ACTION_NOTIFICATION_SNOOZE = "expo.modules.mathwakealarm.ACTION_NOTIFICATION_SNOOZE"
 internal const val ACTION_FIRE_TIMER = "expo.modules.mathwakealarm.ACTION_FIRE_TIMER"
+internal const val ACTION_DISMISS_TIMER = "expo.modules.mathwakealarm.ACTION_DISMISS_TIMER"
 internal const val ACTION_MAINTAIN_ALARM_QUEUE = "expo.modules.mathwakealarm.ACTION_MAINTAIN_ALARM_QUEUE"
 internal const val EXTRA_ALARM_ID = "alarmId"
 internal const val EXTRA_EVENT_ID = "eventId"
@@ -79,7 +84,10 @@ internal const val CHANNEL_ID = "mathwake-alarms"
  */
 internal const val CHANNEL_ID_RING = "mathwake-alarm-ring"
 internal const val NOTIFICATION_ID = 1001
-internal const val CHANNEL_ID_TIMER = "mathwake-timer"
+// New ID is required because Android does not let apps change sound on an
+// existing channel after creation.
+internal const val CHANNEL_ID_TIMER = "mathwake-timer-sound-v2"
+internal const val CHANNEL_ID_TIMER_FALLBACK = "mathwake-timer-sound-fallback-v1"
 internal const val TIMER_NOTIFICATION_ID = 1002
 private const val TIMER_RECORD_KEY = "timer.main"
 private const val TIMER_REQUEST_CODE = 0x4D57544
@@ -717,6 +725,8 @@ internal fun ensureTimerChannel(context: Context) {
     NotificationManager.IMPORTANCE_HIGH,
   ).apply {
     description = "Notifikasi saat Timer MathWake selesai"
+    // The foreground service plays the bundled MathWake sound directly.
+    // Keep this channel silent to avoid overlapping a second channel chime.
     setSound(null, null)
     enableVibration(false)
     lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
@@ -725,19 +735,51 @@ internal fun ensureTimerChannel(context: Context) {
   nm.createNotificationChannel(channel)
 }
 
-internal fun showTimerNotification(context: Context) {
-  ensureTimerChannel(context)
+internal fun ensureTimerFallbackChannel(context: Context) {
+  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+  val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+  val channel = NotificationChannel(CHANNEL_ID_TIMER_FALLBACK, "Timer MathWake", NotificationManager.IMPORTANCE_HIGH).apply {
+    description = "Suara Timer MathWake jika pemutar latar tidak tersedia"
+    setSound(
+      alarmSoundUri(context),
+      AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build(),
+    )
+    lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+  }
+  nm.createNotificationChannel(channel)
+}
+
+internal fun buildTimerNotification(
+  context: Context,
+  channelId: String,
+  foregroundService: Boolean = false,
+): android.app.Notification {
   val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
-  val builder = NotificationCompat.Builder(context, CHANNEL_ID_TIMER)
+  val builder = NotificationCompat.Builder(context, channelId)
     .setSmallIcon(smallIconRes(context))
     .setContentTitle("Timer selesai")
     .setContentText("Waktu timer telah habis.")
-    .setCategory(NotificationCompat.CATEGORY_STATUS)
+    .setCategory(NotificationCompat.CATEGORY_ALARM)
     .setPriority(NotificationCompat.PRIORITY_HIGH)
     .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-    .setAutoCancel(true)
-    .setOngoing(false)
-    .setSilent(true)
+    .setAutoCancel(!foregroundService)
+    .setOngoing(foregroundService)
+    .setDeleteIntent(PendingIntent.getBroadcast(
+      context, TIMER_REQUEST_CODE + 1,
+      Intent(context, MathWakeAlarmReceiver::class.java).setAction(ACTION_DISMISS_TIMER),
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    ))
+    .addAction(0, "Hentikan", PendingIntent.getBroadcast(
+      context, TIMER_REQUEST_CODE + 1,
+      Intent(context, MathWakeAlarmReceiver::class.java).setAction(ACTION_DISMISS_TIMER),
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    ))
+  // Android 8+ reads sound from its channel; the fallback uses the same
+  // bundled MathWake WAV on older Android versions too.
+  if (!foregroundService && Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+    builder.setSound(alarmSoundUri(context), AudioManager.STREAM_ALARM)
+  }
   if (launch != null) builder.setContentIntent(
     PendingIntent.getActivity(
       context,
@@ -746,11 +788,26 @@ internal fun showTimerNotification(context: Context) {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     ),
   )
-  val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-  nm.notify(TIMER_NOTIFICATION_ID, builder.build())
+  return builder.build()
+}
+
+internal fun showTimerNotification(context: Context) {
+  ensureTimerChannel(context)
+  try {
+    TimerRingerService.start(context)
+  } catch (e: Exception) {
+    Log.e("MathWakeTimer", "foreground ringer start failed; using sound notification", e)
+    ensureTimerFallbackChannel(context)
+    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    nm.notify(TIMER_NOTIFICATION_ID, buildTimerNotification(context, CHANNEL_ID_TIMER_FALLBACK))
+  }
 }
 
 class MathWakeAlarmReceiver : BroadcastReceiver() {
+  companion object {
+    private val asyncExecutor = Executors.newSingleThreadScheduledExecutor()
+  }
+
   override fun onReceive(context: Context, intent: Intent) {
     val appCtx = context.applicationContext
     val store = prefs(appCtx)
@@ -769,6 +826,12 @@ class MathWakeAlarmReceiver : BroadcastReceiver() {
         AlarmRingerService.pumpAlarmQueue(appCtx)
         return
       }
+      ACTION_DISMISS_TIMER -> {
+        try { appCtx.stopService(Intent(appCtx, TimerRingerService::class.java)) } catch (_: Exception) { }
+        val nm = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.cancel(TIMER_NOTIFICATION_ID)
+        return
+      }
       ACTION_FIRE_ALARM -> {
         val alarmId = intent.getStringExtra(EXTRA_ALARM_ID) ?: return
         val record = readRecord(store, alarmId) ?: return
@@ -776,51 +839,83 @@ class MathWakeAlarmReceiver : BroadcastReceiver() {
         val requestedGeneration = intent.getStringExtra(EXTRA_EVENT_GENERATION)
         if (requestedTrigger > 0L && requestedTrigger != record.triggerAtMs) return
         if (requestedGeneration != record.eventGeneration) return
-        if (System.currentTimeMillis() < record.triggerAtMs) {
-          // Inexact fallback or an early broadcast must never start audio early.
+
+        val receivedAtMs = System.currentTimeMillis()
+        Log.i(
+          "MathWakeDiag",
+          "receiver.received alarmId=$alarmId scheduledTrigger=${record.triggerAtMs} receivedAtMs=$receivedAtMs diffMs=${receivedAtMs - record.triggerAtMs}",
+        )
+
+        val earlyByMs = record.triggerAtMs - receivedAtMs
+        if (earlyByMs > 1500L) {
+          // Truly premature broadcast (clock changed backwards or abnormal batching). Reschedule.
           try { setExactAlarm(appCtx, record) } catch (_: Exception) { }
           return
         }
-        val generation = record.eventGeneration ?: UUID.randomUUID().toString()
-        val firedRecord = if (record.eventGeneration == null) {
-          record.copy(eventGeneration = generation).also { writeRecord(store, it) }
-        } else record
-        val eventId = AlarmEventLedger.eventId(alarmId, firedRecord.triggerAtMs, generation)
-        val eventStore = sharedAlarmEventStore(store)
-        val event = AlarmEventLedger.ensureScheduled(
-          eventStore,
-          AlarmEventLedger.scheduled(
-            alarmId, firedRecord.triggerAtMs, generation, firedRecord.deepLink, firedRecord.ringtoneUri,
-            snoozeMinutes = firedRecord.snoozeMinutes,
-          ),
-        ) ?: return
-        val firedAtMs = System.currentTimeMillis()
-        val queued = AlarmEventQueue.enqueue(eventStore, event.copy(firedAtMs = firedAtMs)) ?: return
-        Log.i("MathWakeRingtoneTrace", "receiver alarmId=$alarmId scheme=${Uri.parse(record.ringtoneUri).scheme ?: "none"}")
-        Log.i("MathWakeAlarm", "fired alarmId=$alarmId recurring=${record.isRecurring}")
-        if (firedRecord.isRecurring) {
-          // Arm the next occurrence FIRST so repeating alarms survive even
-          // if the app is never opened after this fire.
-          val next = nextRepeatingTriggerMs(firedRecord.timeHHMM, firedRecord.days, System.currentTimeMillis())
-          if (next != null) {
-            val updated = firedRecord.copy(triggerAtMs = next, eventGeneration = UUID.randomUUID().toString())
-            writeRecord(store, updated)
-            try {
-              setExactAlarm(appCtx, updated)
-            } catch (_: Exception) {
-            }
-          } else {
-            deleteRecord(store, alarmId)
+
+        val pendingResult = goAsync()
+        val wakeLock = (appCtx.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+          ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mathwake:alarm-receiver-async")
+          ?.apply {
+            setReferenceCounted(false)
+            acquire(3500L)
           }
-        } else {
-          // One-shot consumed. The sticky notification stays until solved.
-          deleteRecord(store, alarmId)
-        }
-        // Remember the fired alarm (with timestamp) so JS can route to the
-        // challenge on cold start, even before any tap is delivered.
-        PendingAlarmLedger.enqueue(sharedPendingAlarmStore(store), queued, firedAtMs)
-        scheduleQueueMaintenance(appCtx)
-        AlarmRingerService.pumpAlarmQueue(appCtx)
+
+        val delayMs = maxOf(0L, earlyByMs)
+        asyncExecutor.schedule({
+          try {
+            if (System.currentTimeMillis() < record.triggerAtMs) {
+              try { setExactAlarm(appCtx, record) } catch (_: Exception) { }
+              return@schedule
+            }
+            val generation = record.eventGeneration ?: UUID.randomUUID().toString()
+            val firedRecord = if (record.eventGeneration == null) {
+              record.copy(eventGeneration = generation).also { writeRecord(store, it) }
+            } else record
+            val eventId = AlarmEventLedger.eventId(alarmId, firedRecord.triggerAtMs, generation)
+            val eventStore = sharedAlarmEventStore(store)
+            val event = AlarmEventLedger.ensureScheduled(
+              eventStore,
+              AlarmEventLedger.scheduled(
+                alarmId, firedRecord.triggerAtMs, generation, firedRecord.deepLink, firedRecord.ringtoneUri,
+                snoozeMinutes = firedRecord.snoozeMinutes,
+              ),
+            ) ?: return@schedule
+            val firedAtMs = System.currentTimeMillis()
+            val queued = AlarmEventQueue.enqueue(eventStore, event.copy(firedAtMs = firedAtMs)) ?: return@schedule
+            Log.i("MathWakeRingtoneTrace", "receiver alarmId=$alarmId scheme=${Uri.parse(record.ringtoneUri).scheme ?: "none"}")
+            Log.i("MathWakeAlarm", "fired alarmId=$alarmId recurring=${record.isRecurring}")
+            Log.i("MathWakeDiag", "receiver.fired alarmId=$alarmId firedAtMs=$firedAtMs targetMs=${firedRecord.triggerAtMs}")
+            if (firedRecord.isRecurring) {
+              // Arm the next occurrence FIRST so repeating alarms survive even
+              // if the app is never opened after this fire.
+              val next = nextRepeatingTriggerMs(firedRecord.timeHHMM, firedRecord.days, maxOf(System.currentTimeMillis(), firedRecord.triggerAtMs))
+              if (next != null) {
+                val updated = firedRecord.copy(triggerAtMs = next, eventGeneration = UUID.randomUUID().toString())
+                writeRecord(store, updated)
+                try {
+                  setExactAlarm(appCtx, updated)
+                } catch (_: Exception) {
+                }
+              } else {
+                deleteRecord(store, alarmId)
+              }
+            } else {
+              // One-shot consumed. The sticky notification stays until solved.
+              deleteRecord(store, alarmId)
+            }
+            // Remember the fired alarm (with timestamp) so JS can route to the
+            // challenge on cold start, even before any tap is delivered.
+            PendingAlarmLedger.enqueue(sharedPendingAlarmStore(store), queued, firedAtMs)
+            scheduleQueueMaintenance(appCtx)
+            AlarmRingerService.pumpAlarmQueue(appCtx)
+          } catch (t: Throwable) {
+            Log.e("MathWakeAlarm", "async alarm fire failed", t)
+          } finally {
+            try { wakeLock?.release() } catch (_: Exception) { }
+            try { pendingResult.finish() } catch (_: Exception) { }
+          }
+        }, delayMs, TimeUnit.MILLISECONDS)
       }
       ACTION_FIRE_SNOOZE -> handleSnoozeFire(appCtx, intent)
       ACTION_NOTIFICATION_SNOOZE -> handleNotificationSnooze(appCtx, intent)
@@ -832,15 +927,37 @@ class MathWakeAlarmReceiver : BroadcastReceiver() {
         }
         val firedDeadline = intent.getLongExtra(EXTRA_TIMER_DEADLINE, 0L)
         if (firedDeadline != 0L && firedDeadline != record.deadlineAtMs) return
-        if (System.currentTimeMillis() < record.deadlineAtMs) {
-          // A stale or early delivery must not notify before the Timer deadline.
-          // Keep the record and replace the one-shot alarm with the same deadline.
+        val earlyTimerMs = record.deadlineAtMs - System.currentTimeMillis()
+        if (earlyTimerMs > 1500L) {
           scheduleTimerSystem(appCtx, record.deadlineAtMs)
           return
         }
-        // Consume before notifying so duplicate broadcasts are harmless.
-        deleteTimerRecord(store)
-        try { showTimerNotification(appCtx) } catch (_: Exception) { }
+
+        val pendingResult = goAsync()
+        val wakeLock = (appCtx.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+          ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mathwake:timer-receiver-async")
+          ?.apply {
+            setReferenceCounted(false)
+            acquire(3500L)
+          }
+
+        val delayMs = maxOf(0L, earlyTimerMs)
+        asyncExecutor.schedule({
+          try {
+            if (System.currentTimeMillis() < record.deadlineAtMs) {
+              scheduleTimerSystem(appCtx, record.deadlineAtMs)
+              return@schedule
+            }
+            // Consume before notifying so duplicate broadcasts are harmless.
+            deleteTimerRecord(store)
+            try { showTimerNotification(appCtx) } catch (_: Exception) { }
+          } catch (t: Throwable) {
+            Log.e("MathWakeTimer", "async timer fire failed", t)
+          } finally {
+            try { wakeLock?.release() } catch (_: Exception) { }
+            try { pendingResult.finish() } catch (_: Exception) { }
+          }
+        }, delayMs, TimeUnit.MILLISECONDS)
       }
       else -> return
     }
@@ -869,16 +986,40 @@ class MathWakeAlarmReceiver : BroadcastReceiver() {
       AlarmEventLedger.transition(store, eventId, generation, AlarmEventState.STOPPED)
       return
     }
-    if (System.currentTimeMillis() < event.triggerAtMs) {
+    val earlySnoozeMs = event.triggerAtMs - System.currentTimeMillis()
+    if (earlySnoozeMs > 1500L) {
       scheduleSnoozeSystem(context, event)
       return
     }
-    val queued = AlarmEventQueue.enqueue(store, event) ?: return
-    PendingAlarmLedger.enqueue(
-      sharedPendingAlarmStore(prefs(context)), queued, queued.firedAtMs ?: System.currentTimeMillis(),
-    )
-    scheduleQueueMaintenance(context)
-    AlarmRingerService.pumpAlarmQueue(context)
+
+    val pendingResult = goAsync()
+    val wakeLock = (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+      ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mathwake:snooze-receiver-async")
+      ?.apply {
+        setReferenceCounted(false)
+        acquire(3500L)
+      }
+
+    val delayMs = maxOf(0L, earlySnoozeMs)
+    asyncExecutor.schedule({
+      try {
+        if (System.currentTimeMillis() < event.triggerAtMs) {
+          scheduleSnoozeSystem(context, event)
+          return@schedule
+        }
+        val queued = AlarmEventQueue.enqueue(store, event) ?: return@schedule
+        PendingAlarmLedger.enqueue(
+          sharedPendingAlarmStore(prefs(context)), queued, queued.firedAtMs ?: System.currentTimeMillis(),
+        )
+        scheduleQueueMaintenance(context)
+        AlarmRingerService.pumpAlarmQueue(context)
+      } catch (t: Throwable) {
+        Log.e("MathWakeAlarm", "async snooze fire failed", t)
+      } finally {
+        try { wakeLock?.release() } catch (_: Exception) { }
+        try { pendingResult.finish() } catch (_: Exception) { }
+      }
+    }, delayMs, TimeUnit.MILLISECONDS)
   }
 
   private fun restoreSnoozeSchedules(context: Context, store: SharedPreferences) {

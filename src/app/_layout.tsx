@@ -1,10 +1,12 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider, router, usePathname } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useReducedMotion } from 'react-native-reanimated';
 import { Alert, AppState, Platform, useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AuthProvider, useAuth } from '@/contexts/auth-context';
+import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import {
   consumePendingAlarmToReminder,
   initAlarmAutoStart,
@@ -74,6 +76,14 @@ function buildAlarmEntryDeps(): AlarmEntryDeps {
 // ---------------------------------------------------------------------------
 
 export default function RootLayout() {
+  return (
+    <ThemePreferenceProvider>
+      <RootLayoutContent />
+    </ThemePreferenceProvider>
+  );
+}
+
+function RootLayoutContent() {
   const colorScheme = useColorScheme();
 
   return (
@@ -93,6 +103,7 @@ export default function RootLayout() {
 // ---------------------------------------------------------------------------
 
 function RootNavigator() {
+  const reduceMotion = useReducedMotion();
   const pathname = usePathname();
   const {
     session,
@@ -144,6 +155,7 @@ function RootNavigator() {
   } | null>(null);
   const permissionRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const alarmDraftRestoreChecked = useRef(false);
+  const pendingAlarmConsumeInFlight = useRef(false);
 
   useEffect(() => {
     if (
@@ -225,15 +237,47 @@ function RootNavigator() {
     initAlarmAutoStart(alarmEntryDeps).catch(() => undefined);
   }, []);
 
-  // Native exact-alarm cold start: the receiver marks every fire, so an app
-  // launched by the full-screen intent routes to the challenge as soon as
-  // the session is ready — without waiting for any tap. Runs on every
-  // sign-in; consume is one-shot and recency-gated, and challenge entry is
-  // de-duplicated, so re-runs are harmless.
+  // Native exact-alarm entry: wait until the authenticated navigator can
+  // actually render the protected reminder route, then consume a fire that
+  // launched the app. Also check whenever the app returns to the foreground:
+  // an already-running app may resume on Home without changing its session.
   useEffect(() => {
-    if (!session) return;
-    consumePendingAlarmToReminder(buildAlarmEntryDeps()).catch(() => undefined);
-  }, [session]);
+    if (
+      !session
+      || isLoading
+      || recoveryActive
+      || profileLoading
+      || profileError
+      || onboardingRequired
+      || profile?.id !== session.user.id
+    ) return;
+
+    const consumePendingAlarm = () => {
+      if (pendingAlarmConsumeInFlight.current) return;
+      pendingAlarmConsumeInFlight.current = true;
+      void consumePendingAlarmToReminder(buildAlarmEntryDeps())
+        .catch(() => undefined)
+        .finally(() => {
+          pendingAlarmConsumeInFlight.current = false;
+        });
+    };
+
+    consumePendingAlarm();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') consumePendingAlarm();
+    });
+    // Check periodically while the app is active in foreground so that alarms
+    // firing during active app usage immediately trigger reminder navigation.
+    const activeInterval = setInterval(() => {
+      if (AppState.currentState === 'active') {
+        consumePendingAlarm();
+      }
+    }, 1000);
+    return () => {
+      subscription.remove();
+      clearInterval(activeInterval);
+    };
+  }, [isLoading, onboardingRequired, profile?.id, profileError, profileLoading, recoveryActive, session]);
 
   if (isLoading || (!!session && profileLoading && !recoveryActive)) {
     // Return null while the splash overlay is on screen; avoids a white flash.
@@ -255,7 +299,7 @@ function RootNavigator() {
           name="alarm-reminder"
           options={{
             gestureEnabled: false,
-            animation: 'fade',
+            animation: reduceMotion ? 'none' : 'fade',
           }}
         />
         {/* Math Challenge — full screen, session required, no tab bar */}
@@ -263,7 +307,7 @@ function RootNavigator() {
           name="challenge"
           options={{
             gestureEnabled: false,
-            animation: 'slide_from_bottom',
+            animation: reduceMotion ? 'none' : 'slide_from_bottom',
           }}
         />
       </Stack.Protected>

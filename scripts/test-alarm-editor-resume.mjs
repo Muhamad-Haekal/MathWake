@@ -85,6 +85,11 @@ assert.match(editorSource, /onDraftChange\(createAlarmEditorDraft/);
 assert.match(editorSource, /applyCustomRingtoneResult\(ringtone,[\s\S]*nativeResult\.uri/);
 assert.match(editorSource, /applyCustomRingtoneResult\(ringtone,[\s\S]*asset\.uri/);
 assert.match(editorSource, /type: 'audio\/\*',[\s\S]*copyToCacheDirectory: true/);
+assert.match(editorSource, /ringtoneSelectionVersion\.current === selectionVersion/);
+assert.match(editorSource, /if \(saving \|\| !ringtoneReady\) return/);
+assert.match(editorSource, /disabled=\{saving \|\| !ringtoneReady\}[\s\S]*accessibilityLabel="Simpan alarm"/);
+assert.match(editorSource, /if \(alarm\?\.id\) \{[\s\S]*await setAlarmRingtone\(alarm\.id, value\)/);
+assert.doesNotMatch(editorSource, /\[DEFAULT_ALARM_RINGTONE,\s*SYSTEM_ALARM_RINGTONE\]/);
 assert.match(editorSource, /\{visible \? <AlarmEditorContent/);
 
 console.log('Hasil: assertion alarm editor resume lulus.');

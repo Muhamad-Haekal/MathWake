@@ -1,10 +1,33 @@
-import { useEffect, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  TextInput,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import { SymbolView, type SymbolViewProps } from 'expo-symbols';
+import { Gesture, GestureDetector, GestureHandlerRootView, type PanGesture } from 'react-native-gesture-handler';
+import Reanimated, {
+  FadeIn,
+  runOnJS,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { Accent, AlarmPalette, Danger, Radius, Spacing } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
     DIFFICULTY_OPTIONS,
@@ -29,7 +52,6 @@ import {
 } from '@/lib/alarm-editor-draft-logic';
 import {
     describeAlarmDay,
-    describeAlarmSchedule,
     formatTimeID,
     formatCountdown,
     nextOccurrenceForAlarm,
@@ -38,11 +60,12 @@ import {
 } from '@/lib/home-data';
 import {
   DEFAULT_ALARM_RINGTONE,
-  SYSTEM_ALARM_RINGTONE,
   getAlarmRingtone,
+  setAlarmRingtone,
   type AlarmRingtone,
 } from '@/lib/alarm-ringtones';
 import { previewRingtone, stopRingtonePreview } from '@/lib/ringtone-preview';
+import { getChallengeQuestionPreview } from '@/lib/question-preview';
 import { MATHWAKE_ALARM_SOUND } from '@/lib/alarm-sound';
 import {
   getNativeDefaultAlarmRingtoneUri,
@@ -60,13 +83,42 @@ const DAY_BUTTONS: { value: number; label: string }[] = [
   { value: 0, label: 'Min' },
 ];
 
-const DAY_INITIALS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+const DAY_INITIALS = ['S', 'S', 'R', 'K', 'J', 'S', 'M'];
 
 const QUICK_ADDS: { label: string; minutes: number }[] = [
   { label: '+10 mnt', minutes: 10 },
   { label: '+30 mnt', minutes: 30 },
   { label: '+1 jam', minutes: 60 },
 ];
+
+type RepeatChoice = 'once' | 'weekdays' | 'daily' | 'custom';
+const REPEAT_OPTIONS: { value: RepeatChoice; label: string }[] = [
+  { value: 'once', label: 'Sekali' },
+  { value: 'weekdays', label: 'Hari kerja' },
+  { value: 'daily', label: 'Setiap hari' },
+  { value: 'custom', label: 'Kustom' },
+];
+
+type Panel = 'challenge' | 'snooze' | 'sound';
+type SymbolName = SymbolViewProps['name'];
+const SYMBOLS = {
+  up: { ios: 'chevron.up', android: 'keyboard_arrow_up', web: 'keyboard_arrow_up' },
+  down: { ios: 'chevron.down', android: 'keyboard_arrow_down', web: 'keyboard_arrow_down' },
+  plus: { ios: 'plus', android: 'add', web: 'add' },
+  minus: { ios: 'minus', android: 'remove', web: 'remove' },
+  bell: { ios: 'bell.fill', android: 'notifications', web: 'notifications' },
+  challenge: { ios: 'function', android: 'calculate', web: 'calculate' },
+  snooze: { ios: 'zzz', android: 'snooze', web: 'snooze' },
+  sound: { ios: 'music.note', android: 'music_note', web: 'music_note' },
+  active: { ios: 'power', android: 'power_settings_new', web: 'power_settings_new' },
+  check: { ios: 'checkmark', android: 'check', web: 'check' },
+  folder: { ios: 'folder', android: 'folder_open', web: 'folder_open' },
+  trash: { ios: 'trash', android: 'delete', web: 'delete' },
+  warning: { ios: 'exclamationmark.circle.fill', android: 'error', web: 'error' },
+} as const satisfies Record<string, SymbolName>;
+
+const MAX_SHEET_WIDTH = 640;
+const SCRIM = 'rgba(20, 12, 9, 0.45)';
 
 function diag(stage: string, details?: Record<string, unknown>) {
   console.info('[MathWakeDiag]', { stage, timestampMs: Date.now(), ...details });
@@ -124,6 +176,7 @@ interface AlarmEditorContentProps {
   saving: boolean;
   insets: ReturnType<typeof useSafeAreaInsets>;
   theme: ReturnType<typeof useTheme>;
+  dragGesture: PanGesture;
   onClose: () => void;
   onDraftChange: (draft: AlarmEditorDraft) => void;
   onSave: (form: AlarmForm, ringtone: AlarmRingtone) => Promise<AlarmRow | null>;
@@ -136,14 +189,17 @@ function AlarmEditorContent({
   saving,
   insets,
   theme,
+  dragGesture,
   onClose,
   onDraftChange,
   onSave,
   onDelete,
 }: AlarmEditorContentProps) {
+  const styles = useEditorStyles();
   // Lazy initialisers: evaluated once on mount (key controls when that is).
   const matchesDraft = !!draft && draft.alarmId === (alarm?.id ?? null);
   const [form, setForm] = useState<AlarmForm>(() => draft?.alarmId === (alarm?.id ?? null) ? draft.form : formFromAlarm(alarm));
+  const questionPreview = getChallengeQuestionPreview(form.difficulty);
   const [kind, setKind] = useState<ScheduleKind>(() => {
     if (draft?.alarmId === (alarm?.id ?? null)) return draft.kind;
     const f = formFromAlarm(alarm);
@@ -155,10 +211,9 @@ function AlarmEditorContent({
     draft?.alarmId === (alarm?.id ?? null) ? draft.ringtone : DEFAULT_ALARM_RINGTONE,
   );
   const [ringtoneReady, setRingtoneReady] = useState(matchesDraft || !alarm);
-  const [challengeExpanded, setChallengeExpanded] = useState(false);
-  const [soundExpanded, setSoundExpanded] = useState(false);
-  const [snoozeExpanded, setSnoozeExpanded] = useState(false);
-  const [quickAddExpanded, setQuickAddExpanded] = useState(false);
+    const ringtoneSelectionVersion = useRef(0);
+  const [openPanel, setOpenPanel] = useState<Panel | null>(null);
+  const [customOpen, setCustomOpen] = useState(false);
   const [clockNow, setClockNow] = useState(() => new Date());
 
   useEffect(() => {
@@ -174,9 +229,10 @@ function AlarmEditorContent({
   useEffect(() => {
     if (matchesDraft) return;
     let active = true;
+      const selectionVersion = ringtoneSelectionVersion.current;
     void getAlarmRingtone(ringtoneAlarmId).then((value) => {
       if (active) {
-        setRingtone(value);
+          if (ringtoneSelectionVersion.current === selectionVersion) setRingtone(value);
         setRingtoneReady(true);
       }
     });
@@ -195,17 +251,30 @@ function AlarmEditorContent({
 
   async function chooseRingtone(value: AlarmRingtone) {
     diag('chooseRingtone.start', { kind: value.kind, hasUri: Boolean(value.uri) });
+      const selectionVersion = ++ringtoneSelectionVersion.current;
     stopRingtonePreview();
     setRingtone(value);
+      setRingtoneReady(true);
     if (value.kind === 'custom' && value.uri) void previewRingtone(value.uri);
     if (value.kind === 'mathwake') void previewRingtone(MATHWAKE_ALARM_SOUND);
     if (value.kind === 'system') {
       const uri = await getNativeDefaultAlarmRingtoneUri();
       if (uri) void previewRingtone(uri);
     }
+      // An explicit ringtone choice for an existing alarm is an independent
+      // user setting. Persist it immediately so a screen/app refresh cannot
+      // silently restore MathWake before the rest of the form is saved.
+      if (alarm?.id) {
+        try {
+          await setAlarmRingtone(alarm.id, value);
+          if (selectionVersion === ringtoneSelectionVersion.current) setLocalError(null);
+        } catch {
+          if (selectionVersion === ringtoneSelectionVersion.current) {
+            setLocalError('Suara alarm tidak dapat disimpan. Pilih audio lagi lalu coba kembali.');
+          }
+        }
+      }
   }
-
-  const [hourStr, minuteStr] = form.time.split(':');
 
   function setKindOption(next: ScheduleKind) {
     setKind(next);
@@ -235,7 +304,7 @@ function AlarmEditorContent({
   }
 
   async function handleSave() {
-    if (saving) return;
+      if (saving || !ringtoneReady) return;
     const invalid = validateAlarmForm(form);
     if (invalid) {
       setLocalError(invalid);
@@ -261,108 +330,40 @@ function AlarmEditorContent({
           previewNow,
         );
 
-  const hour24 = Number(hourStr);
-  const hour12 = hour24 % 12 || 12;
-  const period = hour24 >= 12 ? 'PM' : 'AM';
-  const setHour12 = (next: number) => setForm((f) => {
-    const current = Number(f.time.slice(0, 2));
-    const normalized = ((next - 1 + 12) % 12) + 1;
-    const value = (normalized % 12) + (current >= 12 ? 12 : 0);
-    return { ...f, time: `${String(value).padStart(2, '0')}:${f.time.slice(3)}` };
-  });
-  const setPeriod = (next: 'AM' | 'PM') => setForm((f) => {
-    const h = Number(f.time.slice(0, 2));
-    const value = next === 'PM' ? (h % 12) + 12 : h % 12;
-    return { ...f, time: `${String(value).padStart(2, '0')}:${f.time.slice(3)}` };
+  const [hourValue, minuteValue] = form.time.split(':').map(Number);
+  const stepHour = (delta: number) => setForm((f) => ({ ...f, time: shiftTime(f.time, delta * 60) }));
+  // Minute stepper wraps within the hour (59 -> 00) instead of carrying into it.
+  const stepMinute = (delta: number) => setForm((f) => {
+    const [h, m] = f.time.split(':').map(Number);
+    const next = (((m + delta) % 60) + 60) % 60;
+    return { ...f, time: `${String(h).padStart(2, '0')}:${String(next).padStart(2, '0')}` };
   });
 
-  return (
-    <View style={[styles.screen, { backgroundColor: AlarmPalette.cream, paddingTop: insets.top }]}>
-      <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scrollContent}>
-        <View style={styles.topBar}>
-          <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Tutup editor" style={styles.closeButton}><ThemedText style={styles.closeGlyph}>{'\u00D7'}</ThemedText></Pressable>
-          <View style={styles.headingWrap}>
-            <TextInput value={form.title} onChangeText={(title) => setForm((f) => ({ ...f, title: title.slice(0, 40) }))} maxLength={40} editable={!saving} placeholder={alarm ? 'ALARM' : 'ALARM 1'} placeholderTextColor={Accent} accessibilityLabel="Judul alarm, opsional" style={styles.alarmTitleInput} returnKeyType="done" />
-            <ThemedText style={styles.heading}>Choose Time</ThemedText>
-          </View>
-          <View style={styles.periodToggle}>{(['AM', 'PM'] as const).map((value) => <Pressable key={value} onPress={() => setPeriod(value)} accessibilityRole="button" accessibilityState={{ selected: period === value }} style={[styles.periodOption, period === value && styles.periodSelected]}><ThemedText style={[styles.periodText, period === value && styles.periodTextSelected]}>{value}</ThemedText></Pressable>)}</View>
-        </View>
+  const isWeekdays = form.days.length === 5 && [1, 2, 3, 4, 5].every((day) => form.days.includes(day));
+  const repeatChoice: RepeatChoice =
+    kind === 'once'
+      ? 'once'
+      : customOpen
+      ? 'custom'
+      : kind === 'daily' || form.days.length === 7
+      ? 'daily'
+      : isWeekdays
+      ? 'weekdays'
+      : 'custom';
 
-        {/* 1. Waktu alarm */}
-        <View style={styles.timeColumns} accessibilityLabel={`Waktu ${form.time}`}>
-          <WheelColumn label="HOURS" value={String(hour12).padStart(2, '0')} onPrevious={() => setHour12(hour12 - 1)} onNext={() => setHour12(hour12 + 1)} />
-          <WheelColumn label="MINUTES" value={minuteStr} onPrevious={() => setForm((f) => ({ ...f, time: shiftTime(f.time, -1) }))} onNext={() => setForm((f) => ({ ...f, time: shiftTime(f.time, 1) }))} />
-        </View>
-        <Pressable onPress={() => setQuickAddExpanded((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded: quickAddExpanded }} style={styles.quickAddTrigger}><ThemedText style={styles.quickAddText}>Atur cepat {quickAddExpanded ? '-' : '+'}</ThemedText></Pressable>
-        {quickAddExpanded ? <View style={styles.quickAddRow}>{QUICK_ADDS.map(({ label, minutes }) => <Pressable key={label} disabled={saving} onPress={() => setForm((f) => ({ ...f, time: shiftTime(nowTime(), minutes) }))} accessibilityRole="button" accessibilityLabel={`Atur ${label} dari sekarang`} style={styles.quickAddChip}><ThemedText style={styles.quickAddText}>{label}</ThemedText></Pressable>)}</View> : null}
+  function chooseRepeat(next: RepeatChoice) {
+    setCustomOpen(next === 'custom');
+    if (next === 'once') setKindOption('once');
+    else if (next === 'daily') setKindOption('daily');
+    else if (next === 'weekdays') applyPreset([1, 2, 3, 4, 5]);
+    else setKindOption('custom');
+  }
 
-        {/* Small neutral next-time note, not a selectable card. */}
-        {kind === 'once' ? (
-          preview ? (
-            <View style={styles.countdownPill}><ThemedText style={styles.countdownIcon}>{'\u231A'}</ThemedText><ThemedText style={styles.countdownText}>Rings in {formatCountdown(preview, previewNow)} {describeAlarmDay(preview, previewNow)}</ThemedText></View>
-          ) : (
-            <ThemedText type="small" style={[styles.nextNote, { color: Danger }]}>
-              Waktu alarm sudah lewat. Pilih waktu baru untuk melanjutkan.
-            </ThemedText>
-          )
-        ) : preview ? (
-          <View style={styles.countdownPill}><ThemedText style={styles.countdownIcon}>{'\u231A'}</ThemedText><ThemedText style={styles.countdownText}>Rings in {formatCountdown(preview, previewNow)} {describeAlarmDay(preview, previewNow)}</ThemedText></View>
-        ) : null}
+  const togglePanel = (panel: Panel) => setOpenPanel((current) => (current === panel ? null : panel));
+  const weekendDays = WEEKDAY_PRESETS.find((item) => item.key === 'weekend')?.days ?? [0, 6];
+  const timeLabel = formatTimeID(form.time);
 
-        <View style={[styles.repeatCard, { backgroundColor: AlarmPalette.white, borderColor: AlarmPalette.border }]}>
-          <View style={styles.repeatHeader}>
-            <View style={styles.cardTitleLine}><View style={styles.repeatIcon}><ThemedText style={styles.cardIcon}>{'\u21BB'}</ThemedText></View><ThemedText style={styles.cardTitle}>REPEAT</ThemedText></View>
-            <View style={styles.presetGroup}>
-              <Pressable onPress={() => setKindOption('once')} accessibilityRole="radio" accessibilityState={{ selected: kind === 'once' }} style={[styles.miniPill, kind === 'once' && styles.miniPillActive]}><ThemedText style={[styles.miniPillText, kind === 'once' && styles.miniPillTextActive]}>Sekali saja</ThemedText></Pressable>
-              <Pressable onPress={() => applyPreset([1, 2, 3, 4, 5])} accessibilityRole="radio" accessibilityState={{ selected: form.days.length === 5 && [1, 2, 3, 4, 5].every((day) => form.days.includes(day)) }} style={[styles.miniPill, form.days.length === 5 && [1, 2, 3, 4, 5].every((day) => form.days.includes(day)) && styles.miniPillActive]}><ThemedText style={[styles.miniPillText, form.days.length === 5 && [1, 2, 3, 4, 5].every((day) => form.days.includes(day)) && styles.miniPillTextActive]}>Mon - Fri</ThemedText></Pressable>
-            </View>
-          </View>
-          <View style={styles.daysRow}>{DAY_BUTTONS.map(({ value, label }, index) => {
-            const selected = kind !== 'once' && form.days.includes(value);
-            return <Pressable key={value} disabled={saving} onPress={() => toggleDay(value)} accessibilityRole="button" accessibilityLabel={`${label}${selected ? ', dipilih' : ''}`} accessibilityState={{ selected }} style={[styles.dayButton, selected ? styles.daySelected : styles.dayIdle]}><ThemedText style={[styles.dayText, selected && styles.dayTextSelected]}>{DAY_INITIALS[index]}</ThemedText></Pressable>;
-          })}</View>
-          <View style={styles.extraPresets}>{WEEKDAY_PRESETS.filter((item) => item.key === 'daily' || item.key === 'weekend').map(({ key, label, days }) => <Pressable key={key} onPress={() => applyPreset(days)} accessibilityRole="button" style={styles.extraPreset}><ThemedText style={styles.extraPresetText}>{label}</ThemedText></Pressable>)}</View>
-        </View>
-
-        <View style={styles.smallCardsRow}>
-          <Pressable disabled={saving} onPress={() => setSnoozeExpanded((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded: snoozeExpanded }} style={[styles.smallCard, { backgroundColor: AlarmPalette.white, borderColor: AlarmPalette.border }]}>
-            <View style={styles.cardTitleLine}><ThemedText style={styles.cardIcon}>{'\u23F2'}</ThemedText><ThemedText style={styles.cardTitle}>Snooze</ThemedText></View>
-            <View style={styles.snoozeSummary}><ThemedText style={styles.cardSub}>Interval</ThemedText><ThemedText style={styles.snoozeValue}>{form.snooze_minutes} min</ThemedText></View>
-          </Pressable>
-          <Pressable onPress={() => setSoundExpanded((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded: soundExpanded }} style={[styles.smallCard, { backgroundColor: AlarmPalette.white, borderColor: AlarmPalette.border }]}>
-            <View style={styles.cardTitleLine}><ThemedText style={styles.cardIcon}>{'\u266B'}</ThemedText><ThemedText style={styles.cardTitle}>Sound</ThemedText><ThemedText style={styles.chevron}>{'\u203A'}</ThemedText></View>
-            <ThemedText numberOfLines={1} style={styles.cardSub}>{ringtone.name}</ThemedText>
-          </Pressable>
-        </View>
-
-        {snoozeExpanded ? <View style={[styles.expandedCard, { backgroundColor: AlarmPalette.white, borderColor: AlarmPalette.border }]}>
-          <ThemedText type="smallBold" style={styles.sectionTitle}>Interval Snooze</ThemedText>
-          <View style={styles.chipRow}>{SNOOZE_INTERVALS.map((minutes) => {
-            const selected = form.snooze_minutes === minutes;
-            return <Pressable key={minutes} disabled={saving} onPress={() => setForm((current) => ({ ...current, snooze_minutes: minutes }))} accessibilityRole="radio" accessibilityLabel={`${minutes} menit`} accessibilityState={{ selected }} style={[styles.snoozeOption, { backgroundColor: selected ? Accent : theme.backgroundElement }]}><ThemedText type="small" style={selected ? styles.chipTextSelected : { color: theme.textSecondary }}>{minutes} min</ThemedText></Pressable>;
-          })}</View>
-        </View> : null}
-
-{soundExpanded ? <View style={[styles.expandedCard, { backgroundColor: AlarmPalette.white, borderColor: AlarmPalette.border }]}>
-         <ThemedText type="smallBold" style={styles.sectionTitle}>Suara alarm</ThemedText>
-         <View style={styles.chipRow}>
-           {[DEFAULT_ALARM_RINGTONE, SYSTEM_ALARM_RINGTONE].map((option) => (
-             <Pressable
-               key={option.kind}
-               disabled={saving}
-               onPress={() => void chooseRingtone(option)}
-               accessibilityRole="radio"
-               accessibilityState={{ selected: ringtone.kind === option.kind }}
-               style={[styles.chipWide, { backgroundColor: ringtone.kind === option.kind ? Accent : theme.backgroundElement }]}>
-               <ThemedText type="small" style={ringtone.kind === option.kind ? styles.chipTextSelected : { color: theme.textSecondary }}>
-                 {option.name}
-               </ThemedText>
-             </Pressable>
-           ))}
-         </View>
-         <Pressable
-           disabled={saving}
-            onPress={async () => {
+  const pickCustomRingtone = async () => {
                diag('picker.handler.start');
               stopRingtonePreview();
               try {
@@ -405,86 +406,294 @@ function AlarmEditorContent({
                 stopRingtonePreview();
                  diag('picker.handler.end');
               }
-            }}
-           accessibilityRole="button"
-           accessibilityLabel="Pilih audio kustom"
-           style={[styles.chipWide, { backgroundColor: theme.backgroundElement }]}>
-           <ThemedText type="small" style={{ color: theme.textSecondary }}>
-             {ringtone.kind === 'custom' ? ringtone.name : 'Pilih audio kustom'}
-           </ThemedText>
-         </Pressable>
-         <ThemedText type="small" themeColor="textSecondary" style={styles.fieldHint}>
-           Default MathWake digunakan jika akses audio kustom dicabut atau tidak valid.
-         </ThemedText>
-         </View> : null}
+  };
 
-                {/* 3. Tantangan matematika */}
-        <Pressable onPress={() => setChallengeExpanded((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded: challengeExpanded }} style={[styles.challengeCard, { backgroundColor: AlarmPalette.white, borderColor: AlarmPalette.border }]}>
-          <View style={styles.challengeIcon}><ThemedText style={styles.challengeGlyph}>+/-</ThemedText></View>
-          <View style={styles.challengeCopy}><View style={styles.challengeTitleLine}><ThemedText style={styles.cardTitle}>Math Wakeup Task</ThemedText><ThemedText style={styles.requiredBadge}>REQUIRED</ThemedText></View><ThemedText style={styles.cardSub}>Level {form.difficulty} · {form.question_count} soal</ThemedText></View>
-          <ThemedText style={styles.editText}>{challengeExpanded ? 'Tutup' : 'Edit'} ›</ThemedText>
-        </Pressable>
-        {challengeExpanded ? <View style={[styles.expandedCard, { backgroundColor: AlarmPalette.white, borderColor: AlarmPalette.border }]}>
-        <ThemedText type="smallBold" style={styles.sectionTitle}>Tantangan matematika</ThemedText>
-        <ThemedText type="small" themeColor="textSecondary" style={styles.fieldHint}>Level dan jumlah soal tersimpan untuk alarm ini.</ThemedText>
-        <View style={styles.chipRow}>
-          {DIFFICULTY_OPTIONS.map((option) => {
-            const selected = form.difficulty === option;
-            return (
-              <Pressable
-                key={option}
-                disabled={saving}
-                onPress={() => setForm((f) => ({ ...f, difficulty: option }))}
-                accessibilityRole="button"
-                accessibilityState={{ selected }}
-                accessibilityLabel={`Level ${option}`}
-                style={[
-                  styles.chipWide,
-                  { backgroundColor: selected ? Accent : theme.backgroundElement },
-                ]}>
-                <ThemedText
-                  type="small"
-                  style={selected ? styles.chipTextSelected : { color: theme.textSecondary }}>
-                  {option}
-                </ThemedText>
-              </Pressable>
-            );
-          })}
-        </View>
-        <TimeStepperRow
-          label="Soal"
-          value={String(form.question_count)}
-          saving={saving}
-          minusDisabled={form.question_count <= 1}
-          plusDisabled={form.question_count >= 10}
-          onMinus={() => setForm((f) => ({ ...f, question_count: f.question_count - 1 }))}
-          onPlus={() => setForm((f) => ({ ...f, question_count: f.question_count + 1 }))}
-        />
-        </View> : null}
-
-         {/* 6. Status dan ringkasan */}
-        <View style={[styles.statusCard, { backgroundColor: AlarmPalette.white, borderColor: AlarmPalette.border }]}>
-          <View><ThemedText style={styles.cardTitle}>Status</ThemedText><ThemedText style={styles.cardSub}>{form.is_active ? 'Alarm' : 'Nonaktif'}</ThemedText></View>
-          <Switch
-            value={form.is_active}
+  return (
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <GestureDetector gesture={dragGesture}>
+      <View style={styles.header}>
+        <View style={styles.handle} />
+        <View style={styles.headerRow}>
+          <Pressable
             disabled={saving}
-            onValueChange={(v) => setForm((f) => ({ ...f, is_active: v }))}
-            trackColor={{ false: theme.backgroundSelected, true: Accent }}
-            accessibilityLabel={form.is_active ? 'Nonaktifkan alarm' : 'Aktifkan alarm'}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Batal"
+            hitSlop={8}
+            style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}>
+            <ThemedText style={styles.headerCancel}>Batal</ThemedText>
+          </Pressable>
+          <ThemedText style={styles.headerTitle} accessibilityRole="header" numberOfLines={1}>
+            {alarm ? 'Edit alarm' : 'Alarm baru'}
+          </ThemedText>
+          <Pressable
+            disabled={saving || !ringtoneReady}
+            onPress={handleSave}
+            accessibilityRole="button"
+            accessibilityLabel="Simpan alarm"
+            accessibilityState={{ disabled: saving || !ringtoneReady, busy: saving }}
+            hitSlop={8}
+            style={({ pressed }) => [styles.saveButton, pressed && styles.pressed, (saving || !ringtoneReady) && styles.disabled]}>
+            {saving ? <ActivityIndicator size="small" color={theme.onPrimary} /> : <ThemedText style={styles.saveText}>Simpan</ThemedText>}
+          </Pressable>
+        </View>
+      </View>
+      </GestureDetector>
+
+      {localError ? (
+        <Reanimated.View
+          entering={FadeIn.duration(160)}
+          style={styles.errorBanner}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite">
+          <SymbolView name={SYMBOLS.warning} size={18} tintColor={theme.danger} />
+          <ThemedText style={styles.errorText}>{localError}</ThemedText>
+        </Reanimated.View>
+      ) : null}
+
+      <ScrollView
+        style={styles.flex}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + Spacing.five }]}>
+        {/* Waktu: 24 jam, sama dengan format daftar alarm. */}
+        <View style={styles.timeBlock}>
+          <View style={styles.timeRow}>
+            <TimeStepper label="Jam" unit="jam" value={hourValue} disabled={saving} onStep={stepHour} />
+            <ThemedText style={styles.timeColon} importantForAccessibility="no">:</ThemedText>
+            <TimeStepper label="Menit" unit="menit" value={minuteValue} disabled={saving} onStep={stepMinute} />
+          </View>
+          {preview ? (
+            <View style={styles.previewPill} accessibilityLiveRegion="polite">
+              <SymbolView name={SYMBOLS.bell} size={16} tintColor={theme.primaryStrong} />
+              <ThemedText style={styles.previewText}>
+                {describeAlarmDay(preview, previewNow)}, {timeLabel} · {formatCountdown(preview, previewNow)}
+              </ThemedText>
+            </View>
+          ) : kind === 'once' ? (
+            <ThemedText style={styles.pastText} accessibilityLiveRegion="polite">
+              Waktu ini sudah lewat hari ini. Pilih waktu yang akan datang.
+            </ThemedText>
+          ) : null}
+          <View style={styles.quickRow}>
+            {QUICK_ADDS.map(({ label, minutes }) => (
+              <Pressable
+                key={label}
+                disabled={saving}
+                onPress={() => setForm((f) => ({ ...f, time: shiftTime(nowTime(), minutes) }))}
+                accessibilityRole="button"
+                accessibilityLabel={`Atur ${label} dari sekarang`}
+                style={({ pressed }) => [styles.quickChip, pressed && styles.pressed]}>
+                <ThemedText style={styles.quickText}>{label}</ThemedText>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <ThemedText style={styles.sectionLabel}>Nama alarm</ThemedText>
+          <TextInput
+            value={form.title}
+            onChangeText={(title) => setForm((f) => ({ ...f, title: title.slice(0, 40) }))}
+            maxLength={40}
+            editable={!saving}
+            placeholder="Opsional, mis. Bangun kerja"
+            placeholderTextColor={theme.textSecondary}
+            accessibilityLabel="Nama alarm, opsional"
+            style={styles.input}
+            returnKeyType="done"
           />
         </View>
-        <View style={[styles.summaryBox, { backgroundColor: theme.backgroundElement }]}>
-          <ThemedText type="small" style={styles.summaryLine}>
-            {formatTimeID(form.time)} • {describeAlarmSchedule({ is_recurring: form.is_recurring, days: dayNumbersToTokens(form.days) })}
-          </ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            {form.question_count} soal • Level {form.difficulty} • {form.is_active ? 'Aktif' : 'Nonaktif'}
-          </ThemedText>
+
+        <View style={styles.section}>
+          <ThemedText style={styles.sectionLabel}>Ulangi</ThemedText>
+          <SegmentedControl options={REPEAT_OPTIONS} value={repeatChoice} disabled={saving} onChange={chooseRepeat} />
+          {repeatChoice === 'custom' ? (
+            <Reanimated.View entering={FadeIn.duration(180)} style={styles.daysBlock}>
+              <View style={styles.daysRow}>
+                {DAY_BUTTONS.map(({ value, label }, index) => {
+                  const selected = form.days.includes(value);
+                  return (
+                    <Pressable
+                      key={value}
+                      disabled={saving}
+                      onPress={() => toggleDay(value)}
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={label}
+                      accessibilityState={{ checked: selected, disabled: saving }}
+                      style={({ pressed }) => [styles.dayButton, selected && styles.daySelected, pressed && styles.pressed]}>
+                      <ThemedText style={[styles.dayText, selected && styles.dayTextSelected]}>{DAY_INITIALS[index]}</ThemedText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Pressable
+                disabled={saving}
+                onPress={() => applyPreset(weekendDays)}
+                accessibilityRole="button"
+                style={({ pressed }) => [styles.inlineLink, pressed && styles.pressed]}>
+                <ThemedText style={styles.inlineLinkText}>Pilih akhir pekan</ThemedText>
+              </Pressable>
+            </Reanimated.View>
+          ) : null}
         </View>
 
-        {localError ? (
-          <ThemedText type="small" style={styles.errorText}>{localError}</ThemedText>
-        ) : null}
+        <View style={styles.group}>
+          <ListRow
+            icon={SYMBOLS.challenge}
+            label="Tantangan"
+            value={`${capitalize(form.difficulty)} · ${form.question_count} soal`}
+            expanded={openPanel === 'challenge'}
+            disabled={saving}
+            onPress={() => togglePanel('challenge')}
+          />
+          {openPanel === 'challenge' ? (
+            <Reanimated.View entering={FadeIn.duration(180)} style={styles.panel}>
+              <ThemedText style={styles.panelLabel}>Level</ThemedText>
+              <View style={styles.chipRow}>
+                {DIFFICULTY_OPTIONS.map((option) => {
+                  const selected = form.difficulty === option;
+                  return (
+                    <Pressable
+                      key={option}
+                      disabled={saving}
+                      onPress={() => setForm((f) => ({ ...f, difficulty: option }))}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected, disabled: saving }}
+                      accessibilityLabel={`Level ${option}`}
+                      style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && styles.pressed]}>
+                      <ThemedText style={[styles.chipText, selected && styles.chipTextSelected]}>{capitalize(option)}</ThemedText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.previewCard}>
+                <View style={styles.previewHeader}>
+                  <ThemedText style={styles.previewEyebrow}>CONTOH SOAL</ThemedText>
+                  <ThemedText style={styles.previewLevel}>{capitalize(form.difficulty)}</ThemedText>
+                </View>
+                <ThemedText style={styles.previewDescription}>{questionPreview.description}</ThemedText>
+                <View style={styles.previewList}>
+                  {questionPreview.examples.map((example, index) => (
+                    <View key={example} style={styles.previewRow}>
+                      <ThemedText style={styles.previewNumber}>{String(index + 1).padStart(2, '0')}</ThemedText>
+                      <ThemedText style={styles.previewExpression}>{example}</ThemedText>
+                    </View>
+                  ))}
+                </View>
+              </View>
+              <TimeStepperRow
+                label="Jumlah soal"
+                value={String(form.question_count)}
+                saving={saving}
+                minusDisabled={form.question_count <= 1}
+                plusDisabled={form.question_count >= 10}
+                onMinus={() => setForm((f) => ({ ...f, question_count: f.question_count - 1 }))}
+                onPlus={() => setForm((f) => ({ ...f, question_count: f.question_count + 1 }))}
+              />
+            </Reanimated.View>
+          ) : null}
+
+          <View style={styles.divider} />
+          <ListRow
+            icon={SYMBOLS.snooze}
+            label="Snooze"
+            value={<ThemedText style={styles.rowValue}>{form.snooze_minutes} min</ThemedText>}
+            expanded={openPanel === 'snooze'}
+            disabled={saving}
+            onPress={() => togglePanel('snooze')}
+          />
+          {openPanel === 'snooze' ? (
+            <Reanimated.View entering={FadeIn.duration(180)} style={styles.panel}>
+              <View style={styles.chipRow} accessibilityRole="radiogroup">
+                {SNOOZE_INTERVALS.map((minutes) => {
+                  const selected = form.snooze_minutes === minutes;
+                  return (
+                    <Pressable
+                      key={minutes}
+                      disabled={saving}
+                      onPress={() => setForm((current) => ({ ...current, snooze_minutes: minutes }))}
+                      accessibilityRole="radio"
+                      accessibilityLabel={`${minutes} menit`}
+                      accessibilityState={{ selected, disabled: saving }}
+                      style={({ pressed }) => [styles.chip, styles.chipFlex, selected && styles.chipSelected, pressed && styles.pressed]}>
+                      <ThemedText style={[styles.chipText, selected && styles.chipTextSelected]}>{minutes} mnt</ThemedText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </Reanimated.View>
+          ) : null}
+
+          <View style={styles.divider} />
+          <ListRow
+            icon={SYMBOLS.sound}
+            label="Suara"
+            value={ringtone.name}
+            expanded={openPanel === 'sound'}
+            disabled={saving}
+            onPress={() => togglePanel('sound')}
+          />
+          {openPanel === 'sound' ? (
+            <Reanimated.View entering={FadeIn.duration(180)} style={styles.panelFlush}>
+                {[DEFAULT_ALARM_RINGTONE].map((option) => {
+                const selected = ringtone.kind === option.kind;
+                return (
+                  <Pressable
+                    key={option.kind}
+                    disabled={saving}
+                    onPress={() => void chooseRingtone(option)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected, disabled: saving }}
+                    style={({ pressed }) => [styles.optionRow, pressed && styles.rowPressed]}>
+                    <ThemedText style={[styles.optionText, selected && styles.optionTextSelected]}>{option.name}</ThemedText>
+                    {selected ? <SymbolView name={SYMBOLS.check} size={18} tintColor={theme.primaryStrong} /> : null}
+                  </Pressable>
+                );
+              })}
+              <Pressable
+                disabled={saving}
+                onPress={() => void pickCustomRingtone()}
+                accessibilityRole="button"
+                accessibilityLabel="Pilih audio kustom"
+                accessibilityState={{ selected: ringtone.kind === 'custom', disabled: saving }}
+                style={({ pressed }) => [styles.optionRow, pressed && styles.rowPressed]}>
+                <ThemedText numberOfLines={1} style={[styles.optionText, ringtone.kind === 'custom' && styles.optionTextSelected]}>
+                  {ringtone.kind === 'custom' ? ringtone.name : 'Pilih audio kustom…'}
+                </ThemedText>
+                <SymbolView
+                  name={ringtone.kind === 'custom' ? SYMBOLS.check : SYMBOLS.folder}
+                  size={18}
+                  tintColor={ringtone.kind === 'custom' ? theme.primaryStrong : theme.textSecondary}
+                />
+              </Pressable>
+              <ThemedText style={styles.hint}>
+                Default MathWake digunakan jika akses audio kustom dicabut atau tidak valid.
+              </ThemedText>
+            </Reanimated.View>
+          ) : null}
+
+          <View style={styles.divider} />
+          <View style={styles.row}>
+            <View style={styles.rowIcon}>
+              <SymbolView name={SYMBOLS.active} size={18} tintColor={theme.primaryStrong} />
+            </View>
+            <View style={styles.rowTextCol}>
+              <ThemedText style={styles.rowLabel}>Aktif</ThemedText>
+              <ThemedText style={styles.rowSub}>
+                {form.is_active ? 'Berbunyi sesuai jadwal' : 'Disimpan tanpa berbunyi'}
+              </ThemedText>
+            </View>
+            <Switch
+              value={form.is_active}
+              disabled={saving}
+              onValueChange={(v) => setForm((f) => ({ ...f, is_active: v }))}
+              trackColor={{ false: theme.backgroundSelected, true: theme.primary }}
+              thumbColor={Platform.OS === 'android' ? theme.backgroundElement : undefined}
+              accessibilityLabel={form.is_active ? 'Nonaktifkan alarm' : 'Aktifkan alarm'}
+            />
+          </View>
+        </View>
 
         {alarm ? (
           <Pressable
@@ -493,24 +702,12 @@ function AlarmEditorContent({
             accessibilityRole="button"
             accessibilityLabel="Hapus alarm"
             style={({ pressed }) => [styles.deleteButton, pressed && styles.pressed]}>
-            <ThemedText type="small" style={styles.deleteText}>Hapus alarm</ThemedText>
+            <SymbolView name={SYMBOLS.trash} size={18} tintColor={theme.danger} />
+            <ThemedText style={styles.deleteText}>Hapus alarm</ThemedText>
           </Pressable>
         ) : null}
-
-        <Pressable
-          disabled={saving}
-          onPress={onClose}
-          accessibilityRole="button"
-          accessibilityLabel="Batal"
-          style={({ pressed }) => [styles.cancelButton, pressed && styles.pressed]}>
-          <ThemedText type="small" themeColor="textSecondary">Batal</ThemedText>
-        </Pressable>
       </ScrollView>
-      <View style={[styles.bottomAction, { paddingBottom: Math.max(insets.bottom, Spacing.two) }]}>
-        <Pressable disabled={saving} onPress={onClose} accessibilityRole="button" accessibilityLabel="Batal" style={styles.bottomCancel}><ThemedText style={styles.closeGlyph}>{'\u00D7'}</ThemedText></Pressable>
-        <Pressable disabled={saving} onPress={handleSave} accessibilityRole="button" accessibilityLabel="Simpan alarm" style={({ pressed }) => [styles.saveButton, pressed && styles.pressed, saving && styles.disabled]}><ThemedText style={styles.saveText}>{'\u2713'}  {saving ? 'Menyimpan...' : 'Save Alarm'}</ThemedText></Pressable>
-      </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -521,10 +718,13 @@ function AlarmEditorContent({
 // which remounts AlarmEditorContent and re-runs its lazy state initialisers.
 // ---------------------------------------------------------------------------
 
-/** Create/edit sheet. All controls are pure React Native (Expo Go safe). */
+/** Create/edit bottom sheet. All controls are pure React Native (Expo Go safe). */
 export function AlarmEditorModal({ visible, alarm, draft, saving, onClose, onDraftChange, onSave, onDelete }: AlarmEditorModalProps) {
+  const styles = useEditorStyles();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const reduceMotion = useReducedMotion();
 
   // Key changes whenever the modal opens for a different alarm (or as new).
   // React remounts AlarmEditorContent, re-running its lazy initialisers —
@@ -538,22 +738,79 @@ export function AlarmEditorModal({ visible, alarm, draft, saving, onClose, onDra
     });
   }, [contentKey, contentKind]);
 
+  const translateY = useSharedValue(windowHeight);
+  const scrim = useSharedValue(0);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (reduceMotion) {
+      translateY.set(0);
+      scrim.set(1);
+      return;
+    }
+    translateY.set(windowHeight);
+    scrim.set(0);
+    translateY.set(withSpring(0, { damping: 26, stiffness: 260, mass: 0.9 }));
+    scrim.set(withTiming(1, { duration: 200 }));
+  }, [visible, reduceMotion, windowHeight, translateY, scrim]);
+
+  // Swipe down on the sheet header dismisses through the same onClose as Batal / back.
+  const dismissPan = Gesture.Pan()
+    .enabled(!saving)
+    .activeOffsetY(10)
+    .failOffsetX([-20, 20])
+    .onUpdate((event) => {
+      translateY.set(Math.max(0, event.translationY));
+    })
+    .onEnd((event) => {
+      if (event.translationY > 140 || event.velocityY > 1200) {
+          if (reduceMotion) {
+            runOnJS(onClose)();
+            return;
+          }
+        translateY.set(withTiming(windowHeight, { duration: 180 }, (finished) => {
+          if (finished) runOnJS(onClose)();
+        }));
+        return;
+      }
+        translateY.set(reduceMotion ? 0 : withSpring(0, { damping: 26, stiffness: 320 }));
+    });
+
+  const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.value }] }));
+  const scrimStyle = useAnimatedStyle(() => ({ opacity: scrim.value }));
+
   return (
-    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        {visible ? <AlarmEditorContent
-          key={contentKey}
-          alarm={alarm}
-          draft={draft}
-          saving={saving}
-          insets={insets}
-          theme={theme}
-          onClose={onClose}
-          onDraftChange={onDraftChange}
-          onSave={onSave}
-          onDelete={onDelete}
-        /> : null}
-      </View>
+    <Modal
+      visible={visible}
+      animationType="none"
+      transparent
+      statusBarTranslucent
+      navigationBarTranslucent
+      onRequestClose={onClose}>
+      <GestureHandlerRootView style={styles.modalRoot}>
+        <Reanimated.View pointerEvents="none" style={[styles.scrim, scrimStyle]} />
+        <Reanimated.View
+          accessibilityViewIsModal
+          style={[
+            styles.sheet,
+            { height: windowHeight - insets.top - Spacing.three, width: Math.min(windowWidth, MAX_SHEET_WIDTH) },
+            sheetStyle,
+          ]}>
+          {visible ? <AlarmEditorContent
+            key={contentKey}
+            alarm={alarm}
+            draft={draft}
+            saving={saving}
+            insets={insets}
+            theme={theme}
+            dragGesture={dismissPan}
+            onClose={onClose}
+            onDraftChange={onDraftChange}
+            onSave={onSave}
+            onDelete={onDelete}
+          /> : null}
+        </Reanimated.View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -579,13 +836,14 @@ function TimeStepperRow({
   onMinus: () => void;
   onPlus: () => void;
 }) {
+  const styles = useEditorStyles();
   return (
     <View style={styles.stepperRow}>
-      <ThemedText type="small" style={styles.stepperLabel}>{label}</ThemedText>
+      <ThemedText style={styles.panelLabel}>{label}</ThemedText>
       <View style={styles.stepperGroup}>
-        <StepperButton label="-" onPress={onMinus} disabled={saving || minusDisabled} minus />
-        <ThemedText style={styles.stepperValue}>{value}</ThemedText>
-        <StepperButton label="+" onPress={onPlus} disabled={saving || plusDisabled} />
+        <StepperButton label="Kurangi" onPress={onMinus} disabled={saving || minusDisabled} minus />
+        <ThemedText style={styles.stepperValue} accessibilityLiveRegion="polite">{value}</ThemedText>
+        <StepperButton label="Tambah" onPress={onPlus} disabled={saving || plusDisabled} />
       </View>
     </View>
   );
@@ -603,280 +861,444 @@ function StepperButton({
   minus?: boolean;
 }) {
   const theme = useTheme();
+  const styles = useEditorStyles();
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel={minus ? 'Kurangi' : 'Tambah'}
-      style={({ pressed }) => [
-        styles.stepper,
-        { backgroundColor: theme.backgroundElement },
-        pressed && styles.pressed,
-        disabled && styles.disabled,
-      ]}>
-      <ThemedText type="smallBold" style={{ color: theme.text }}>{label}</ThemedText>
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      style={({ pressed }) => [styles.stepper, pressed && styles.pressed, disabled && styles.disabled]}>
+      <SymbolView name={minus ? SYMBOLS.minus : SYMBOLS.plus} size={18} tintColor={theme.text} />
     </Pressable>
   );
 }
 
-function WheelColumn({ label, value, onPrevious, onNext }: { label: string; value: string; onPrevious: () => void; onNext: () => void }) {
-  const number = Number(value);
-  const previous = label === 'HOURS' ? String(((number + 10) % 12) + 1).padStart(2, '0') : String((number + 59) % 60).padStart(2, '0');
-  const next = label === 'HOURS' ? String((number % 12) + 1).padStart(2, '0') : String((number + 1) % 60).padStart(2, '0');
+/** Large tap target with press-and-hold auto-repeat; exposed as an adjustable control. */
+function TimeStepper({
+  label,
+  unit,
+  value,
+  disabled,
+  onStep,
+}: {
+  label: string;
+  unit: string;
+  value: number;
+  disabled: boolean;
+  onStep: (delta: number) => void;
+}) {
+  const styles = useEditorStyles();
+  const display = String(value).padStart(2, '0');
   return (
-    <View style={styles.wheelColumn}>
-      <ThemedText style={styles.wheelLabel}>{label}</ThemedText>
-      <Pressable onPress={onPrevious} accessibilityRole="button" accessibilityLabel={`Kurangi ${label === 'HOURS' ? 'jam' : 'menit'}`} style={styles.wheelNeighbour}><ThemedText style={styles.wheelFaded}>{previous}</ThemedText></Pressable>
-      <View style={styles.wheelSelected}><ThemedText style={[styles.wheelValue, label === 'HOURS' && styles.wheelHour]}>{value}</ThemedText></View>
-      <Pressable onPress={onNext} accessibilityRole="button" accessibilityLabel={`Tambah ${label === 'HOURS' ? 'jam' : 'menit'}`} style={styles.wheelNeighbour}><ThemedText style={styles.wheelFaded}>{next}</ThemedText></Pressable>
-      <ThemedText style={[styles.wheelFaded, styles.wheelLowest]}>{label === 'HOURS' ? String((number % 12) + 2).padStart(2, '0') : String((number + 2) % 60).padStart(2, '0')}</ThemedText>
+    <View style={styles.stepperCol}>
+      <ThemedText style={styles.stepperCaption} importantForAccessibility="no">{label}</ThemedText>
+      <RepeatButton direction="up" label={`Tambah ${unit}`} disabled={disabled} onStep={() => onStep(1)} />
+      <View
+        accessible
+        accessibilityRole="adjustable"
+        accessibilityLabel={label}
+        accessibilityValue={{ text: `${value} ${unit}` }}
+        accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+        onAccessibilityAction={(event) => onStep(event.nativeEvent.actionName === 'increment' ? 1 : -1)}
+        style={styles.timeValueBox}>
+        <ThemedText style={styles.timeValue}>{display}</ThemedText>
+      </View>
+      <RepeatButton direction="down" label={`Kurangi ${unit}`} disabled={disabled} onStep={() => onStep(-1)} />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: AlarmPalette.cream,
-  },
-  backdropPress: {
-    flex: 1,
-  },
-  sheet: {
-    flex: 1,
-    paddingHorizontal: Spacing.three,
-    paddingTop: Spacing.two,
-    paddingBottom: 0,
-  },
-  screen: { flex: 1, width: '100%' },
-  scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: Spacing.two, paddingBottom: Spacing.three, gap: Spacing.two },
-  topBar: { minHeight: 64, paddingHorizontal: Spacing.three, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  closeButton: { width: 42, height: 42, borderRadius: 21, backgroundColor: AlarmPalette.white, alignItems: 'center', justifyContent: 'center' },
-  closeGlyph: { color: AlarmPalette.tertiary, fontSize: 25, lineHeight: 28, fontWeight: '400' },
-  headingWrap: { flex: 1, alignItems: 'center' },
-  eyebrow: { color: Accent, fontSize: 10, lineHeight: 15, letterSpacing: 1.2, fontWeight: '700', textAlign: 'center' },
-  alarmTitleInput: { color: Accent, fontSize: 10, lineHeight: 15, letterSpacing: 1.2, fontWeight: '800', textAlign: 'center', minWidth: 90, padding: 0 },
-  heading: { color: AlarmPalette.darkBrown, fontSize: 18, lineHeight: 23, fontWeight: '700' },
-  periodToggle: { flexDirection: 'row', borderRadius: Radius.chip, backgroundColor: AlarmPalette.white, padding: 3, minWidth: 80 },
-  periodOption: { flex: 1, borderRadius: Radius.chip, paddingHorizontal: 7, paddingVertical: 6, alignItems: 'center' },
-  periodSelected: { backgroundColor: Accent },
-  periodText: { color: AlarmPalette.tertiary, fontSize: 11, fontWeight: '700' },
-  periodTextSelected: { color: AlarmPalette.white },
-  nameField: { paddingHorizontal: Spacing.one, gap: 4 },
-  timeColumns: { flexDirection: 'row', gap: Spacing.two, paddingHorizontal: Spacing.one },
-  wheelColumn: { flex: 1, height: 220, borderRadius: 110, backgroundColor: AlarmPalette.white, alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.two, overflow: 'hidden' },
-  wheelLabel: { color: AlarmPalette.tertiary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: Spacing.one },
-  wheelNeighbour: { height: 31, justifyContent: 'center', paddingHorizontal: Spacing.four },
-  wheelFaded: { color: '#D7C9C0', fontSize: 15, fontWeight: '600', textAlign: 'center' },
-  wheelLowest: { opacity: 0.55 },
-  wheelSelected: { width: '82%', minHeight: 48, borderRadius: Radius.control, backgroundColor: AlarmPalette.peach, borderWidth: 1, borderColor: '#F3D8CA', alignItems: 'center', justifyContent: 'center' },
-  wheelValue: { color: AlarmPalette.darkBrown, fontSize: 27, lineHeight: 32, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  wheelHour: { color: Accent, fontSize: 30 },
-  countdownPill: { alignSelf: 'center', borderRadius: Radius.chip, backgroundColor: AlarmPalette.white, flexDirection: 'row', alignItems: 'center', gap: Spacing.one, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, marginVertical: Spacing.one },
-  countdownIcon: { color: Accent, fontSize: 14 },
-  countdownText: { color: AlarmPalette.secondary, fontSize: 11, fontWeight: '600' },
-  quickAddTrigger: { alignSelf: 'center', paddingHorizontal: Spacing.two, paddingVertical: 2 },
-  quickAddRow: { flexDirection: 'row', justifyContent: 'center', gap: Spacing.two },
-  quickAddChip: { borderRadius: Radius.chip, backgroundColor: AlarmPalette.white, paddingHorizontal: Spacing.two, paddingVertical: Spacing.one },
-  quickAddText: { color: AlarmPalette.secondary, fontSize: 10, fontWeight: '600' },
-  card: { borderWidth: 1, borderRadius: Radius.block, padding: Spacing.three, gap: Spacing.two },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.one },
-  cardTitleLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-  cardIcon: { color: Accent, fontSize: 16, fontWeight: '700' },
-  cardTitle: { color: AlarmPalette.darkBrown, fontSize: 13, fontWeight: '700', flexShrink: 1 },
-  presetGroup: { flexDirection: 'row', gap: 5 },
-  repeatCard: { borderWidth: 1, borderRadius: Radius.block, padding: Spacing.two, gap: Spacing.two },
-  repeatHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.one },
-  repeatIcon: { width: 30, height: 30, borderRadius: 9, backgroundColor: AlarmPalette.peach, alignItems: 'center', justifyContent: 'center' },
-  miniPill: { borderRadius: Radius.chip, paddingHorizontal: 9, paddingVertical: 6, backgroundColor: AlarmPalette.cream },
-  miniPillActive: { backgroundColor: Accent },
-  miniPillText: { color: AlarmPalette.secondary, fontSize: 9, fontWeight: '600' },
-  miniPillTextActive: { color: AlarmPalette.white },
-  daysRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 5 },
-  dayButton: { flex: 1, minWidth: 30, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
-  daySelected: { backgroundColor: Accent },
-  dayIdle: { backgroundColor: AlarmPalette.cream },
-  dayText: { color: AlarmPalette.secondary, fontSize: 11, fontWeight: '700' },
-  dayTextSelected: { color: AlarmPalette.white },
-  presetFooter: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.three },
-  extraPresets: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.three },
-  extraPreset: { minHeight: 20, justifyContent: 'center', paddingHorizontal: 4 },
-  extraPresetText: { color: AlarmPalette.tertiary, fontSize: 9, fontWeight: '600' },
-  linkText: { color: Accent, fontSize: 11, fontWeight: '600' },
-  cardHint: { color: AlarmPalette.secondary, fontSize: 11, lineHeight: 16 },
-  smallCardsRow: { flexDirection: 'row', gap: Spacing.two },
-  smallCard: { flex: 1, minWidth: 0, minHeight: 84, borderWidth: 1, borderRadius: Radius.block, padding: Spacing.two, justifyContent: 'center', gap: 6 },
-  snoozeSummary: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 4, borderTopWidth: StyleSheet.hairlineWidth, borderColor: AlarmPalette.border, paddingTop: 7 },
-  snoozeValue: { color: Accent, backgroundColor: AlarmPalette.peach, overflow: 'hidden', borderRadius: 7, paddingHorizontal: 6, paddingVertical: 4, fontSize: 9, fontWeight: '700' },
-  snoozeOption: { flex: 1, minWidth: 48, minHeight: 36, borderRadius: Radius.chip, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
-  cardSub: { color: AlarmPalette.secondary, fontSize: 10, lineHeight: 15 },
-  chevron: { marginLeft: 'auto', color: AlarmPalette.tertiary, fontSize: 19 },
-  expandedCard: { borderWidth: 1, borderRadius: Radius.block, padding: Spacing.three, gap: Spacing.two },
-  soundOption: { minHeight: 38, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: AlarmPalette.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
-  challengeCard: { minHeight: 68, borderWidth: 1, borderRadius: Radius.block, padding: Spacing.two, flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
-  challengeIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: AlarmPalette.peach, alignItems: 'center', justifyContent: 'center' },
-  challengeGlyph: { color: Accent, fontSize: 16, fontWeight: '700' },
-  challengeCopy: { flex: 1, minWidth: 0, gap: 3 },
-  challengeTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  requiredBadge: { color: Accent, backgroundColor: AlarmPalette.peach, overflow: 'hidden', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 2, fontSize: 7, fontWeight: '800' },
-  editText: { color: Accent, fontSize: 11, fontWeight: '600' },
-  difficultyChip: { flex: 1, minHeight: 34, borderRadius: Radius.chip, alignItems: 'center', justifyContent: 'center' },
-  statusCard: { minHeight: 56, borderWidth: 1, borderRadius: Radius.block, paddingHorizontal: Spacing.three, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  bottomAction: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, paddingTop: Spacing.two, paddingHorizontal: Spacing.three, backgroundColor: AlarmPalette.cream },
-  bottomCancel: { width: 44, height: 40, borderRadius: Radius.chip, backgroundColor: AlarmPalette.white, alignItems: 'center', justifyContent: 'center' },
-  sectionTitle: {
-    fontSize: 17,
-    lineHeight: 24,
-    marginTop: Spacing.four,
-    marginBottom: Spacing.two,
-  },
-  titleInput: {
-    minHeight: 48,
-    borderWidth: 1,
-    borderRadius: Radius.control,
-    paddingHorizontal: Spacing.three,
-    fontSize: 16,
-    color: AlarmPalette.darkBrown,
-    backgroundColor: AlarmPalette.white,
-    borderColor: AlarmPalette.border,
-  },
-  bigTime: {
-    fontSize: 56,
-    lineHeight: 60,
-    fontWeight: '700',
-    letterSpacing: -1,
-    fontVariant: ['tabular-nums'],
-    textAlign: 'center',
-    marginBottom: Spacing.two,
-  },
-  stepperRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing.one,
-    gap: Spacing.three,
-  },
-  stepperLabel: {
-    fontWeight: '600',
-    flexShrink: 0,
-  },
-  stepperGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-    flexShrink: 0,
-  },
-  stepper: {
-    width: 48,
-    height: 48,
-    borderRadius: Radius.control,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepperValue: {
-    fontSize: 24,
-    lineHeight: 28,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-    minWidth: 56,
-    textAlign: 'center',
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two,
-    marginTop: Spacing.two,
-    marginBottom: Spacing.one,
-  },
-  chip: {
-    borderRadius: Radius.chip,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
-    minWidth: 52,
-    alignItems: 'center',
-  },
-  chipWide: {
-    borderRadius: Radius.chip,
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two,
-    alignItems: 'center',
-  },
-  chipTextSelected: {
-    color: '#ffffff',
-    fontWeight: '700',
-  },
-  kindList: {
-    gap: Spacing.two,
-  },
-  kindRow: {
-    borderRadius: Radius.control,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.three,
-    gap: Spacing.half,
-  },
-  fieldHint: {
-    marginBottom: Spacing.one,
-    lineHeight: 20,
-  },
-  summaryBox: {
-    borderRadius: Radius.control,
-    padding: Spacing.three,
-    gap: Spacing.half,
-    marginTop: Spacing.two,
-  },
-  nextNote: {
-    lineHeight: 20,
-    marginTop: Spacing.two,
-  },
-  summaryLine: {
-    fontWeight: '600',
-  },
-  statusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing.two,
-  },
-  statusLabel: {
-    fontWeight: '600',
-  },
-  errorText: {
-    color: Danger,
-    marginTop: Spacing.two,
-  },
-  saveButton: {
-    backgroundColor: Accent,
-    flex: 1,
-    borderRadius: Radius.chip,
-    minHeight: 52,
-    paddingVertical: Spacing.three,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 0,
-  },
-  saveText: {
-    color: '#ffffff',
-    fontWeight: '700',
-  },
-  deleteButton: {
-    paddingVertical: Spacing.three,
-    alignItems: 'center',
-    marginTop: Spacing.two,
-  },
-  deleteText: {
-    color: Danger,
-    fontWeight: '700',
-  },
-  cancelButton: {
-    paddingVertical: Spacing.two,
-    alignItems: 'center',
-  },
-  pressed: {
-    opacity: 0.8,
-  },
-  disabled: {
-    opacity: 0.5,
-  },
-});
+function RepeatButton({
+  direction,
+  label,
+  disabled,
+  onStep,
+}: {
+  direction: 'up' | 'down';
+  label: string;
+  disabled: boolean;
+  onStep: () => void;
+}) {
+  const theme = useTheme();
+  const styles = useEditorStyles();
+  const timers = useRef<{
+    delay: ReturnType<typeof setTimeout> | null;
+    repeat: ReturnType<typeof setInterval> | null;
+    fired: boolean;
+  }>({ delay: null, repeat: null, fired: false });
+  const stop = useCallback(() => {
+    if (timers.current.delay) clearTimeout(timers.current.delay);
+    if (timers.current.repeat) clearInterval(timers.current.repeat);
+    timers.current.delay = null;
+    timers.current.repeat = null;
+  }, []);
+  useEffect(() => stop, [stop]);
+  useEffect(() => { if (disabled) stop(); }, [disabled, stop]);
+
+  return (
+    <Pressable
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      onPressIn={() => {
+        stop();
+        timers.current.fired = false;
+        timers.current.delay = setTimeout(() => {
+          timers.current.fired = true;
+          onStep();
+          timers.current.repeat = setInterval(onStep, 90);
+        }, 400);
+      }}
+      onPressOut={stop}
+      onPress={() => { if (!timers.current.fired) onStep(); }}
+      style={({ pressed }) => [styles.arrowButton, pressed && styles.arrowPressed, disabled && styles.disabled]}>
+      <SymbolView name={direction === 'up' ? SYMBOLS.up : SYMBOLS.down} size={22} tintColor={theme.textSecondary} />
+    </Pressable>
+  );
+}
+
+function SegmentedControl<T extends string>({
+  options,
+  value,
+  disabled,
+  onChange,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  disabled?: boolean;
+  onChange: (value: T) => void;
+}) {
+  const styles = useEditorStyles();
+  return (
+    <View style={styles.segment} accessibilityRole="radiogroup">
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <Pressable
+            key={option.value}
+            disabled={disabled}
+            onPress={() => onChange(option.value)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected, disabled }}
+            style={({ pressed }) => [styles.segmentItem, selected && styles.segmentItemSelected, pressed && !selected && styles.segmentPressed]}>
+            <ThemedText
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.85}
+              style={[styles.segmentText, selected && styles.segmentTextSelected]}>
+              {option.label}
+            </ThemedText>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function ListRow({
+  icon,
+  label,
+  value,
+  expanded,
+  disabled,
+  onPress,
+}: {
+  icon: SymbolName;
+  label: string;
+  value: string | ReactElement;
+  expanded: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  const styles = useEditorStyles();
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ expanded, disabled }}
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}>
+      <View style={styles.rowIcon}>
+        <SymbolView name={icon} size={18} tintColor={theme.primaryStrong} />
+      </View>
+      <ThemedText style={styles.rowLabel}>{label}</ThemedText>
+      <View style={styles.rowValueWrap}>
+        {typeof value === 'string' ? <ThemedText numberOfLines={1} style={styles.rowValue}>{value}</ThemedText> : value}
+      </View>
+      <SymbolView name={expanded ? SYMBOLS.up : SYMBOLS.down} size={16} tintColor={theme.textSecondary} />
+    </Pressable>
+  );
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function makeStyles(t: ReturnType<typeof useTheme>) {
+  return StyleSheet.create({
+    flex: { flex: 1 },
+    modalRoot: { flex: 1, justifyContent: 'flex-end', alignItems: 'center' },
+    scrim: { ...StyleSheet.absoluteFill, backgroundColor: SCRIM },
+    sheet: {
+      backgroundColor: t.background,
+      borderTopLeftRadius: Radius.block + 8,
+      borderTopRightRadius: Radius.block + 8,
+      overflow: 'hidden',
+    },
+    header: {
+      paddingTop: Spacing.two,
+      paddingBottom: Spacing.two,
+      paddingHorizontal: Spacing.three,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderColor: t.border,
+      backgroundColor: t.background,
+    },
+    handle: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: t.border, marginBottom: Spacing.two },
+    headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
+    headerButton: { minHeight: 48, minWidth: 64, justifyContent: 'center' },
+    headerCancel: { color: t.primaryStrong, fontSize: 17, fontWeight: '600' },
+    headerTitle: { flex: 1, textAlign: 'center', color: t.text, fontSize: 17, fontWeight: '700' },
+    saveButton: {
+      minHeight: 40,
+      minWidth: 84,
+      paddingHorizontal: Spacing.three,
+      borderRadius: Radius.chip,
+      backgroundColor: t.primary,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    saveText: { color: t.onPrimary, fontSize: 16, fontWeight: '700' },
+    errorBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.two,
+      marginHorizontal: Spacing.three,
+      marginTop: Spacing.two,
+      padding: Spacing.three,
+      borderRadius: Radius.control,
+      backgroundColor: t.dangerSoft,
+    },
+    errorText: { flex: 1, color: t.danger, fontSize: 14, lineHeight: 20, fontWeight: '600' },
+    scrollContent: { paddingHorizontal: Spacing.three, paddingTop: Spacing.three, gap: Spacing.four },
+
+    timeBlock: { alignItems: 'center', gap: Spacing.three },
+    timeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.two },
+    timeColon: { color: t.textSecondary, fontSize: 48, lineHeight: 56, fontWeight: '700', marginTop: Spacing.four },
+    stepperCol: { alignItems: 'center', gap: Spacing.one },
+    stepperCaption: { color: t.textSecondary, fontSize: 13, fontWeight: '600' },
+    arrowButton: { width: 112, height: 48, borderRadius: Radius.control, alignItems: 'center', justifyContent: 'center' },
+    arrowPressed: { backgroundColor: t.backgroundSelected },
+    timeValueBox: {
+      width: 112,
+      height: 88,
+      borderRadius: Radius.block,
+      backgroundColor: t.backgroundElement,
+      borderWidth: 1,
+      borderColor: t.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    timeValue: { color: t.text, fontSize: 56, lineHeight: 64, fontWeight: '700', fontVariant: ['tabular-nums'] },
+    previewPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.two,
+      paddingHorizontal: Spacing.three,
+      paddingVertical: Spacing.two,
+      borderRadius: Radius.chip,
+      backgroundColor: t.primarySoft,
+    },
+    previewText: { color: t.text, fontSize: 14, fontWeight: '600', flexShrink: 1 },
+    pastText: { color: t.danger, fontSize: 14, fontWeight: '600', textAlign: 'center' },
+    quickRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: Spacing.two },
+    quickChip: {
+      minHeight: 40,
+      paddingHorizontal: Spacing.three,
+      borderRadius: Radius.chip,
+      borderWidth: 1,
+      borderColor: t.border,
+      backgroundColor: t.backgroundElement,
+      justifyContent: 'center',
+    },
+    quickText: { color: t.primaryStrong, fontSize: 14, fontWeight: '600' },
+
+    section: { gap: Spacing.two },
+    sectionLabel: { color: t.textSecondary, fontSize: 13, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase', paddingHorizontal: Spacing.one },
+    input: {
+      minHeight: 52,
+      borderWidth: 1,
+      borderColor: t.border,
+      borderRadius: Radius.control,
+      paddingHorizontal: Spacing.three,
+      fontSize: 16,
+      color: t.text,
+      backgroundColor: t.backgroundElement,
+    },
+    segment: {
+      flexDirection: 'row',
+      padding: 4,
+      gap: 4,
+      borderRadius: Radius.control,
+      backgroundColor: t.backgroundSelected,
+    },
+    segmentItem: { flex: 1, minHeight: 44, borderRadius: Radius.control - 4, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.one },
+    segmentItemSelected: {
+      backgroundColor: t.backgroundElement,
+      shadowColor: '#000',
+      shadowOpacity: 0.08,
+      shadowRadius: 4,
+      shadowOffset: { width: 0, height: 1 },
+      elevation: 1,
+    },
+    segmentPressed: { opacity: 0.7 },
+    segmentText: { color: t.textSecondary, fontSize: 14, fontWeight: '600' },
+    segmentTextSelected: { color: t.text, fontWeight: '700' },
+    daysBlock: { gap: Spacing.two },
+    daysRow: { flexDirection: 'row', gap: Spacing.one },
+    dayButton: {
+      flex: 1,
+      height: 48,
+      borderRadius: Radius.control,
+      borderWidth: 1,
+      borderColor: t.border,
+      backgroundColor: t.backgroundElement,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    daySelected: { backgroundColor: t.primary, borderColor: t.primary },
+    dayText: { color: t.textSecondary, fontSize: 15, fontWeight: '700' },
+    dayTextSelected: { color: t.onPrimary },
+    inlineLink: { alignSelf: 'flex-end', minHeight: 44, justifyContent: 'center', paddingHorizontal: Spacing.two },
+    inlineLinkText: { color: t.primaryStrong, fontSize: 14, fontWeight: '600' },
+
+    group: {
+      borderRadius: Radius.block,
+      borderWidth: 1,
+      borderColor: t.border,
+      backgroundColor: t.backgroundElement,
+      overflow: 'hidden',
+    },
+    row: { minHeight: 60, flexDirection: 'row', alignItems: 'center', gap: Spacing.three, paddingHorizontal: Spacing.three },
+    rowPressed: { backgroundColor: t.backgroundSelected },
+    rowIcon: { width: 32, height: 32, borderRadius: Radius.control - 4, backgroundColor: t.primarySoft, alignItems: 'center', justifyContent: 'center' },
+    rowLabel: { color: t.text, fontSize: 16, fontWeight: '600' },
+    rowTextCol: { flex: 1, gap: 2 },
+    rowSub: { color: t.textSecondary, fontSize: 13 },
+    rowValueWrap: { flex: 1, alignItems: 'flex-end' },
+    rowValue: { color: t.textSecondary, fontSize: 15 },
+    divider: { height: StyleSheet.hairlineWidth, backgroundColor: t.border, marginLeft: Spacing.three + 32 + Spacing.three },
+    panel: { paddingHorizontal: Spacing.three, paddingBottom: Spacing.three, gap: Spacing.three },
+    panelFlush: { paddingBottom: Spacing.two },
+    panelLabel: { color: t.text, fontSize: 15, fontWeight: '600' },
+    previewCard: {
+      gap: Spacing.two,
+      padding: Spacing.three,
+      borderRadius: Radius.control,
+      borderWidth: 1,
+      borderLeftWidth: 3,
+      borderColor: t.border,
+      borderLeftColor: t.primaryStrong,
+      backgroundColor: t.background,
+    },
+    previewHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    previewEyebrow: { color: t.primaryStrong, fontSize: 11, fontWeight: '800', letterSpacing: 0.7 },
+    previewLevel: {
+      overflow: 'hidden',
+      paddingHorizontal: Spacing.two,
+      paddingVertical: Spacing.half,
+      borderRadius: Radius.chip,
+      backgroundColor: t.primarySoft,
+      color: t.primaryStrong,
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    previewDescription: { color: t.textSecondary, fontSize: 13, lineHeight: 18 },
+    previewList: { gap: Spacing.one, marginTop: Spacing.one },
+    previewRow: {
+      minHeight: 38,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.two,
+      paddingHorizontal: Spacing.two,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.border,
+      borderRadius: Radius.control - 4,
+      backgroundColor: t.backgroundElement,
+    },
+    previewNumber: { width: 24, color: t.primaryStrong, fontSize: 11, fontWeight: '800' },
+    previewExpression: { color: t.text, fontSize: 15, fontWeight: '600' },
+    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
+    chip: {
+      minHeight: 44,
+      paddingHorizontal: Spacing.three,
+      borderRadius: Radius.chip,
+      borderWidth: 1,
+      borderColor: t.border,
+      backgroundColor: t.background,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    chipFlex: { flexGrow: 1, minWidth: 56 },
+    chipSelected: { backgroundColor: t.primary, borderColor: t.primary },
+    chipText: { color: t.text, fontSize: 14, fontWeight: '600' },
+    chipTextSelected: { color: t.onPrimary, fontWeight: '700' },
+    optionRow: {
+      minHeight: 52,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: Spacing.two,
+      paddingLeft: Spacing.three + 32 + Spacing.three,
+      paddingRight: Spacing.three,
+    },
+    optionText: { flex: 1, color: t.text, fontSize: 15 },
+    optionTextSelected: { color: t.primaryStrong, fontWeight: '700' },
+    hint: {
+      color: t.textSecondary,
+      fontSize: 13,
+      lineHeight: 18,
+      paddingLeft: Spacing.three + 32 + Spacing.three,
+      paddingRight: Spacing.three,
+      paddingTop: Spacing.one,
+    },
+
+    stepperRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.three },
+    stepperGroup: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+    stepper: {
+      width: 48,
+      height: 48,
+      borderRadius: Radius.control,
+      borderWidth: 1,
+      borderColor: t.border,
+      backgroundColor: t.background,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    stepperValue: { color: t.text, fontSize: 22, lineHeight: 28, fontWeight: '700', fontVariant: ['tabular-nums'], minWidth: 40, textAlign: 'center' },
+
+    deleteButton: {
+      minHeight: 52,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: Spacing.two,
+      borderRadius: Radius.block,
+      borderWidth: 1,
+      borderColor: t.border,
+      backgroundColor: t.backgroundElement,
+    },
+    deleteText: { color: t.danger, fontSize: 16, fontWeight: '700' },
+    pressed: { opacity: 0.75 },
+    disabled: { opacity: 0.45 },
+  });
+}
+
+function useEditorStyles() {
+  const theme = useTheme();
+  return useMemo(() => makeStyles(theme), [theme]);
+}

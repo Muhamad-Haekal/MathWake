@@ -1,5 +1,6 @@
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
+import { SymbolView } from 'expo-symbols';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -13,7 +14,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { androidRipple } from '@/components/ui/android-ripple';
+import { Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { recoveryCompletionAfterUpdate, type RecoveryCompletion, type LocalSessionStatus } from '@/lib/recovery-completion';
@@ -259,7 +261,17 @@ export default function PasswordRecoveryScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
         <View style={s.card}>
+          <ThemedText style={s.eyebrow}>KEAMANAN AKUN</ThemedText>
           <ThemedText type="subtitle" style={s.title}>{title}</ThemedText>
+
+          {displayPhase !== 'success' ? (
+            <View style={s.progressTrack} accessibilityLabel={`Tahap pemulihan: ${displayPhase}`}>
+              {(['request', 'otp', 'password'] as const).map((step, index) => {
+                const activeIndex = displayPhase === 'request' ? 0 : displayPhase === 'otp' ? 1 : 2;
+                return <View key={step} style={[s.progressStep, { backgroundColor: index <= activeIndex ? theme.primary : theme.border }]} />;
+              })}
+            </View>
+          ) : null}
 
           {displayPhase === 'request' && (
             <>
@@ -267,6 +279,7 @@ export default function PasswordRecoveryScreen() {
                 Masukkan email akun kamu. Jika email tersebut terhubung ke akun, kode reset akan dikirim.
               </ThemedText>
               <TextInput
+                accessibilityLabel="Email akun"
                 style={s.input}
                 placeholder="kamu@email.com"
                 placeholderTextColor={theme.textSecondary}
@@ -287,6 +300,7 @@ export default function PasswordRecoveryScreen() {
                 Masukkan kode dari email untuk melanjutkan pemulihan password.
               </ThemedText>
               <TextInput
+                accessibilityLabel="Kode OTP"
                 style={s.input}
                 placeholder="Kode OTP"
                 placeholderTextColor={theme.textSecondary}
@@ -299,7 +313,9 @@ export default function PasswordRecoveryScreen() {
               <Pressable
                 onPress={requestOtp}
                 disabled={loading || resendActive}
-                accessibilityRole="button">
+                accessibilityRole="button"
+                android_ripple={androidRipple(theme.primarySoft)}
+                style={({ pressed }) => [s.linkButton, pressed && s.pressed]}>
                 <ThemedText type="small" style={s.linkText}>
                   {resendActive ? 'Tunggu sebelum kirim ulang' : 'Kirim ulang kode'}
                 </ThemedText>
@@ -311,7 +327,8 @@ export default function PasswordRecoveryScreen() {
             <>
               <View style={s.passwordField}>
                 <TextInput
-                  style={s.input}
+                  accessibilityLabel="Password baru"
+                  style={[s.input, s.passwordInput]}
                   placeholder="Password baru"
                   placeholderTextColor={theme.textSecondary}
                   secureTextEntry={!passwordVisible}
@@ -320,13 +337,29 @@ export default function PasswordRecoveryScreen() {
                   onChangeText={(value) => { setPassword(value); setFormError(null); }}
                   editable={!loading}
                 />
-                <Pressable onPress={() => setPasswordVisible((value) => !value)} disabled={loading} accessibilityRole="button" accessibilityLabel={passwordVisible ? 'Sembunyikan password' : 'Tampilkan password'}>
-                  <ThemedText type="small" style={s.visibilityText}>{passwordVisible ? 'Sembunyikan' : 'Tampilkan'}</ThemedText>
+                <Pressable
+                  onPress={() => setPasswordVisible((value) => !value)}
+                  disabled={loading}
+                  accessibilityRole="button"
+                  accessibilityLabel={passwordVisible ? 'Sembunyikan password' : 'Tampilkan password'}
+                  android_ripple={androidRipple(theme.primarySoft)}
+                  style={({ pressed }) => [s.eyeButton, pressed && s.pressed]}
+                  hitSlop={8}>
+                  <SymbolView
+                    name={
+                      passwordVisible
+                        ? { ios: 'eye.slash', android: 'visibility_off', web: 'visibility_off' }
+                        : { ios: 'eye', android: 'visibility', web: 'visibility' }
+                    }
+                    size={20}
+                    tintColor={theme.textSecondary}
+                  />
                 </Pressable>
               </View>
               <View style={s.passwordField}>
                 <TextInput
-                  style={s.input}
+                  accessibilityLabel="Konfirmasi password baru"
+                  style={[s.input, s.passwordInput]}
                   placeholder="Konfirmasi password"
                   placeholderTextColor={theme.textSecondary}
                   secureTextEntry={!confirmationVisible}
@@ -335,8 +368,23 @@ export default function PasswordRecoveryScreen() {
                   onChangeText={(value) => { setConfirmation(value); setFormError(null); }}
                   editable={!loading}
                 />
-                <Pressable onPress={() => setConfirmationVisible((value) => !value)} disabled={loading} accessibilityRole="button" accessibilityLabel={confirmationVisible ? 'Sembunyikan konfirmasi password' : 'Tampilkan konfirmasi password'}>
-                  <ThemedText type="small" style={s.visibilityText}>{confirmationVisible ? 'Sembunyikan' : 'Tampilkan'}</ThemedText>
+                <Pressable
+                  onPress={() => setConfirmationVisible((value) => !value)}
+                  disabled={loading}
+                  accessibilityRole="button"
+                  accessibilityLabel={confirmationVisible ? 'Sembunyikan konfirmasi password' : 'Tampilkan konfirmasi password'}
+                  android_ripple={androidRipple(theme.primarySoft)}
+                  style={({ pressed }) => [s.eyeButton, pressed && s.pressed]}
+                  hitSlop={8}>
+                  <SymbolView
+                    name={
+                      confirmationVisible
+                        ? { ios: 'eye.slash', android: 'visibility_off', web: 'visibility_off' }
+                        : { ios: 'eye', android: 'visibility', web: 'visibility' }
+                    }
+                    size={20}
+                    tintColor={theme.textSecondary}
+                  />
                 </Pressable>
               </View>
               <ActionButton label="Perbarui password" loading={loading} onPress={updatePassword} disabled={loading} />
@@ -358,7 +406,7 @@ export default function PasswordRecoveryScreen() {
 
           {formError && <ThemedText type="small" style={s.error}>{formError}</ThemedText>}
           {displayPhase !== 'success' && (
-            <Pressable onPress={() => { void leaveRecovery(); }} disabled={loading}>
+            <Pressable onPress={() => { void leaveRecovery(); }} disabled={loading} style={({ pressed }) => [s.linkButton, pressed && s.pressed]}>
               <ThemedText type="small" style={s.linkText}>
                 {recoveryActive ? 'Batalkan reset dan keluar' : user ? 'Kembali ke profil' : 'Kembali ke login'}
               </ThemedText>
@@ -381,21 +429,29 @@ function ActionButton({
   onPress: () => void;
   disabled: boolean;
 }) {
+  const theme = useTheme();
   return (
-    <Pressable style={buttonStyles.button} onPress={onPress} disabled={disabled} accessibilityRole="button">
-      {loading ? <ActivityIndicator color="#ffffff" /> : <ThemedText style={buttonStyles.text}>{label}</ThemedText>}
+    <Pressable
+      style={({ pressed }) => [buttonStyles.button, { backgroundColor: theme.primary }, (pressed || disabled) && { opacity: disabled ? 0.5 : 0.85 }]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityState={{ disabled, busy: loading }}
+      android_ripple={androidRipple(theme.onPrimary)}>
+      {loading ? <ActivityIndicator color={theme.onPrimary} /> : <ThemedText style={[buttonStyles.text, { color: theme.onPrimary }]}>{label}</ThemedText>}
     </Pressable>
   );
 }
 
 const buttonStyles = StyleSheet.create({
   button: {
-    backgroundColor: '#208AEF',
-    borderRadius: 14,
+    borderRadius: Radius.control,
+    minHeight: 52,
+    justifyContent: 'center',
     paddingVertical: 15,
     alignItems: 'center',
   },
-  text: { color: '#ffffff', fontWeight: '700' },
+  text: { fontWeight: '700', fontSize: 16 },
 });
 
 function styles(theme: ReturnType<typeof useTheme>, insets: ReturnType<typeof useSafeAreaInsets>) {
@@ -410,14 +466,18 @@ function styles(theme: ReturnType<typeof useTheme>, insets: ReturnType<typeof us
     },
     card: {
       gap: Spacing.three,
-      padding: Spacing.four,
-      borderRadius: 20,
+      padding: Spacing.four + Spacing.one,
+      borderRadius: 24,
       backgroundColor: theme.backgroundElement,
     },
-    title: { fontSize: 24 },
+    eyebrow: { color: theme.primaryStrong, fontSize: 11, fontWeight: '800', letterSpacing: 1.25 },
+    title: { fontSize: 28, lineHeight: 34, fontWeight: '800', letterSpacing: -0.5 },
+    progressTrack: { flexDirection: 'row', gap: Spacing.one, marginVertical: Spacing.one },
+    progressStep: { flex: 1, height: 4, borderRadius: 2 },
     input: {
+      minHeight: 48,
       borderWidth: 1.5,
-      borderColor: theme.backgroundSelected,
+      borderColor: theme.border,
       borderRadius: 12,
       paddingHorizontal: Spacing.three,
       paddingVertical: Platform.OS === 'ios' ? 14 : 10,
@@ -425,9 +485,27 @@ function styles(theme: ReturnType<typeof useTheme>, insets: ReturnType<typeof us
       color: theme.text,
       backgroundColor: theme.background,
     },
-    passwordField: { gap: Spacing.one },
-    visibilityText: { color: '#208AEF', fontWeight: '600', textAlign: 'right' },
-    error: { color: '#B91C1C' },
-    linkText: { color: '#208AEF', fontWeight: '600', textAlign: 'center' },
+    passwordField: {
+      position: 'relative',
+      justifyContent: 'center',
+    },
+    passwordInput: {
+      paddingRight: 48,
+    },
+    eyeButton: {
+      position: 'absolute',
+      right: Spacing.two,
+      height: '100%',
+      justifyContent: 'center',
+      alignItems: 'center',
+      minWidth: 44,
+      minHeight: 44,
+    },
+    visibilityButton: { minHeight: 48, alignSelf: 'flex-end', justifyContent: 'center', paddingHorizontal: Spacing.two },
+    linkButton: { minHeight: 48, justifyContent: 'center', paddingHorizontal: Spacing.two },
+    pressed: { opacity: 0.78 },
+    visibilityText: { color: theme.primaryStrong, fontWeight: '600', textAlign: 'right' },
+    error: { color: theme.danger },
+    linkText: { color: theme.primaryStrong, fontWeight: '600', textAlign: 'center' },
   });
 }

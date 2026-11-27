@@ -11,6 +11,9 @@ const nativeModule = fs.readFileSync('modules/mathwake-alarm/src/NativeMathWakeA
 const ledger = fs.readFileSync('modules/mathwake-alarm/android/src/main/java/expo/modules/mathwakealarm/AlarmEventLedger.kt', 'utf8');
 const coordinator = fs.readFileSync('modules/mathwake-alarm/android/src/main/java/expo/modules/mathwakealarm/AlarmSnoozeCoordinator.kt', 'utf8');
 const coordinatorTests = fs.readFileSync('modules/mathwake-alarm/android/src/test/java/expo/modules/mathwakealarm/AlarmSnoozeCoordinatorTest.kt', 'utf8');
+const home = fs.readFileSync('src/app/(app)/index.tsx', 'utf8');
+const homeData = fs.readFileSync('src/lib/home-data.ts', 'utf8');
+const homeCard = fs.readFileSync('src/components/home/next-alarm-card.tsx', 'utf8');
 
 const challengeSnooze = challenge.match(/const handleSnooze = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[/)?.[1];
 assert.ok(challengeSnooze, 'challenge Snooze handler exists');
@@ -62,5 +65,12 @@ assert.match(coordinator, /schedule\(child\)[\s\S]*transitionToSnoozed[\s\S]*run
 assert.match(coordinatorTests, /stoppedOccurrenceCannotBeSnoozed/);
 assert.match(coordinatorTests, /stopAndSnoozeAreSerializedAndOnlyOneCanOwnTheTransition/);
 assert.match(coordinatorTests, /mainRecurringScheduleRemainsUntouched/);
+assert.match(coordinator, /liveScheduledSnoozes[\s\S]*recoverableScheduledEvents\(store\)/);
+assert.match(module, /AsyncFunction\("getLiveScheduledSnoozes"\)[\s\S]*liveScheduledSnoozes/);
+assert.match(module.match(/AsyncFunction\("getLiveAlarmIds"\)[\s\S]*?\n    \}/)?.[0] ?? '', /SCHEDULED[\s\S]*isSnooze[\s\S]*hasLiveSnoozeSource/);
+assert.match(home, /getNativeLiveScheduledSnoozes[\s\S]*resolveHomeSnooze/);
+assert.match(homeData, /candidate\.isSnooze === true[\s\S]*candidate\.snoozeMinutes/);
+assert.match(homeCard, /ALARM AKTIF · DITUNDA[\s\S]*Snooze \{snoozed\.snoozeMinutes\} menit/);
+assert.match(coordinatorTests, /homeSnapshotShowsOnlyLiveScheduledSnoozesInTriggerOrder/);
 
 console.log('Hasil: Phase 3 Snooze challenge/native notification assertions lulus.');

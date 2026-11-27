@@ -9,6 +9,7 @@ import {
   formatCountdown,
   msUntilNextMinute,
   nextAlarmFromList,
+  resolveHomeSnooze,
 } from '../src/lib/home-data.ts';
 import { resolveActiveAlarm, SESSION_UNVERIFIED_MAX_AGE_MS } from '../src/lib/alarm-active-state.ts';
 
@@ -54,6 +55,24 @@ check('sekali jalan yang lewat tidak bergeser ke besok', nextAlarmFromList([once
 const onceLater = row({ id: 'o2', time: '08:00:00', is_recurring: false });
 check('sekali jalan nanti = hari ini', describeAlarmDay(nextAlarmFromList([onceLater], tue).at, tue), 'Hari ini');
 
+// --- Snooze: enabled schedule remains visible with native due countdown ----
+const snoozedOnce = row({ id: 'once-snoozed', time: '07:00:00', is_recurring: false });
+const nativeSnooze = (over = {}) => ({
+  alarmId: snoozedOnce.id, eventId: 'mw1:source:child', triggerAtMs: tue.getTime() + 5 * 60_000,
+  generation: 'child-generation', state: 'scheduled', firedAtMs: null, sessionId: 'child', revision: 0,
+  isSnooze: true, snoozeMinutes: 5, sourceEventId: 'source-event', sourceGeneration: 'source-generation',
+  ...over,
+});
+check('one-shot expired schedule still appears home during snooze',
+  nextAlarmFromList([snoozedOnce], tue), null);
+check('enabled alarm joins its scheduled snooze and interval',
+  resolveHomeSnooze([nativeSnooze()], [snoozedOnce], tue),
+  { alarm: snoozedOnce, triggerAtMs: tue.getTime() + 5 * 60_000, snoozeMinutes: 5 });
+check('pending snooze remains visible when one-time schedule is inactive',
+  resolveHomeSnooze([nativeSnooze()], [{ ...snoozedOnce, is_active: false }], tue).snoozeMinutes, 5);
+check('expired snooze is not displayed as pending', resolveHomeSnooze([nativeSnooze({ triggerAtMs: tue.getTime() })], [snoozedOnce], tue), null);
+check('invalid snooze interval is not displayed', resolveHomeSnooze([nativeSnooze({ snoozeMinutes: 7 })], [snoozedOnce], tue), null);
+
 // --- Status aktif: hanya dari bukti nyata --------------------------------
 const nowMs = at(2026, 10, 20, 7, 5).getTime();
 const session = (alarmId, ageMs) => ({ alarmId, difficulty: 'sulit', questionCount: 5, timeLimitSeconds: 0, maxMistakes: 0, startedAt: nowMs - ageMs });
@@ -90,6 +109,7 @@ check('resync expired melewati alarm yang masih berbunyi/bersesi', useAlarms.inc
 const homeData = fs.readFileSync('src/lib/home-data.ts', 'utf8');
 const todayStats = fs.readFileSync('src/components/home/today-stats.tsx', 'utf8');
 const alarmEditor = fs.readFileSync('src/components/alarms/alarm-editor-modal.tsx', 'utf8');
+const alarmsScreen = fs.readFileSync('src/app/(app)/alarms.tsx', 'utf8');
 check('Home tidak merender RoutineSummary', home.includes('RoutineSummary'), false);
 check('Home data tidak meng-query routine_items', homeData.includes("from('routine_items')"), false);
 check('Home data tetap meng-query alarm_logs', homeData.includes("from('alarm_logs')"), true);
@@ -97,5 +117,12 @@ check('Home data tetap meng-query attempts', homeData.includes("from('attempts')
 check('TodayStats tidak memiliki statistik Routine', todayStats.includes('routinesDone'), false);
 check('editor alarm tidak memuat Routine', alarmEditor.includes('listRoutineSummary'), false);
 check('editor alarm tetap memuat validasi form', alarmEditor.includes('validateAlarmForm'), true);
+check('daftar alarm menonjolkan jam dan status tiap alarm', alarmsScreen.includes('styles.rowTime') && alarmsScreen.includes('statusPill'), true);
+check('daftar alarm mempertahankan kontrol toggle native', alarmsScreen.includes('<Switch') && alarmsScreen.includes('onValueChange={onToggle}'), true);
+check('toggle alarm memakai guard once-lewat', alarmsScreen.includes('canEnableAlarm(alarm)'), true);
+check('saklar once-lewat tidak dapat dinyalakan', alarmsScreen.includes('disabled={busy || enableBlocked}'), true);
+check('once-lewat mengarahkan pengguna mengubah jam', alarmsScreen.includes('ubah jam untuk menyalakan lagi'), true);
+check('kegagalan mutasi terlihat walau daftar terisi', alarmsScreen.includes('error && alarms.length > 0'), true);
+check('empty state mengarah ke aksi tambah alarm', alarmsScreen.includes('onPress={openCreate}'), true);
 
 console.log(`\nHasil: ${passed} lolos, 0 gagal.`);

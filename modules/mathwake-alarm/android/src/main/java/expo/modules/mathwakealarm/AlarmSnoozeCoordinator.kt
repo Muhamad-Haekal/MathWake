@@ -129,5 +129,9 @@ internal object AlarmSnoozeCoordinator {
   fun recoverableScheduledEvents(store: AlarmEventStore): List<AlarmEvent> =
     AlarmEventLedger.all(store).filter { it.state == AlarmEventState.SCHEDULED && it.isSnooze && hasLiveSnoozeSource(store, it) }
 
+  /** Read-only snapshot for Home: only scheduled snoozes linked to a live source occurrence. */
+  fun liveScheduledSnoozes(store: AlarmEventStore): List<AlarmEvent> =
+    recoverableScheduledEvents(store).sortedBy { it.triggerAtMs }
+
   private fun rejected(reason: String) = SnoozeOperationResult(false, reason = reason)
 }

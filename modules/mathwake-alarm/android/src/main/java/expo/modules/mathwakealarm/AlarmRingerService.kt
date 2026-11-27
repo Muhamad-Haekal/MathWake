@@ -84,6 +84,8 @@ class AlarmRingerService : Service() {
     val eventId = intent?.getStringExtra(EXTRA_EVENT_ID)
     val generation = intent?.getStringExtra(EXTRA_EVENT_GENERATION)
     val triggerAtMs = intent?.getLongExtra(EXTRA_OCCURRENCE_TRIGGER, 0L) ?: 0L
+    val nowMs = System.currentTimeMillis()
+    Log.i("MathWakeDiag", "ringerServiceStarted=$nowMs alarmId=$alarmId eventId=$eventId triggerAtMs=$triggerAtMs")
     if (alarmId.isNullOrBlank() || eventId.isNullOrBlank() || generation.isNullOrBlank() || triggerAtMs <= 0L) {
       Log.w(TAG, "service start rejected reason=missing-event-identity")
       stopIfIdle(startId)
@@ -262,6 +264,7 @@ class AlarmRingerService : Service() {
             if (resourceOwner == owner && playerOwner == owner && player === preparedPlayer && !muted) {
               raiseAlarmVolumeForPlayback(owner)
               preparedPlayer.start()
+              Log.i("MathWakeDiag", "audioStarted=${System.currentTimeMillis()} alarmId=$alarmId eventId=${owner.eventId}")
             }
           }
         }
@@ -653,7 +656,7 @@ internal fun buildRingNotification(context: Context, record: AlarmRecord, eventI
     .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
     .setOngoing(true)
     .setAutoCancel(false)
-    .setOnlyAlertOnce(true)
+    .setOnlyAlertOnce(false)
     .setContentIntent(openChallenge)
   val event = AlarmEventLedger.get(sharedAlarmEventStore(prefs(context)), eventId)
   val interval = event?.snoozeMinutes?.takeIf { it in AlarmSnoozeCoordinator.ALLOWED_INTERVALS }
@@ -671,7 +674,9 @@ internal fun buildRingNotification(context: Context, record: AlarmRecord, eventI
       ).build(),
     )
   }
-  if (canUseFullScreenIntent(context)) {
+  val canFullScreen = canUseFullScreenIntent(context)
+  Log.i("MathWakeDiag", "reminderLaunchRequested=${System.currentTimeMillis()} alarmId=${record.alarmId} eventId=$eventId hasFullScreen=$canFullScreen")
+  if (canFullScreen) {
     builder.setFullScreenIntent(openChallenge, true)
   }
   return builder.build()

@@ -65,14 +65,69 @@ export interface FetchQuestionsResult {
   shortfall: 'none' | 'partial' | 'empty';
 }
 
+// Remember newly answered questions immediately. Challenge recording is
+// intentionally non-blocking; this closes the race before the insert returns.
+const recentAttemptsByUser = new Map<string, Set<string>>();
+
+function rememberAttempt(userId: string, questionText: string): void {
+  let texts = recentAttemptsByUser.get(userId);
+  if (!texts) {
+    texts = new Set<string>();
+    recentAttemptsByUser.set(userId, texts);
+  }
+  texts.add(normalizeQuestionText(questionText));
+}
+
+function cachedAttempts(userId: string): Set<string> {
+  return new Set(recentAttemptsByUser.get(userId) ?? []);
+}
+
 // ---------------------------------------------------------------------------
 // Questions fetch
 //
 // Fetches `count` questions matching difficulty (and optional topics).
-// Uses RANDOM ordering so each session gets a different set.
+// Loads the full ordered difficulty pool before unbiased client-side shuffle.
 // The caller must handle shortfall gracefully — the table might not have
 // enough rows for the requested difficulty.
 // ---------------------------------------------------------------------------
+
+const ATTEMPT_PAGE_SIZE = 1000;
+const QUESTION_PAGE_SIZE = 100;
+
+function normalizeQuestionText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+function shuffle<T>(rows: T[]): T[] {
+  for (let i = rows.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rows[i], rows[j]] = [rows[j], rows[i]];
+  }
+  return rows;
+}
+
+async function fetchAttemptedQuestionTexts(client: SupabaseClient, userId: string, difficulty: string): Promise<Set<string>> {
+  const attempted = new Set<string>();
+  for (let offset = 0; ; offset += ATTEMPT_PAGE_SIZE) {
+    const { data, error } = await client
+      .from('attempts')
+      .select('id,question_text')
+      .eq('user_id', userId)
+      .eq('difficulty', difficulty)
+      .order('id', { ascending: true })
+      .range(offset, offset + ATTEMPT_PAGE_SIZE - 1);
+
+    if (error) throw new Error(error.message);
+    const page = (data ?? []) as { question_text: string | null }[];
+    for (const row of page) {
+      if (typeof row.question_text === 'string' && row.question_text.trim()) {
+        attempted.add(normalizeQuestionText(row.question_text));
+      }
+    }
+    if (page.length < ATTEMPT_PAGE_SIZE) break;
+  }
+  return attempted;
+}
 
 export async function fetchQuestions(
   client: SupabaseClient,
@@ -80,36 +135,51 @@ export async function fetchQuestions(
     difficulty: string;
     topics?: string[] | null;
     count: number;
+    userId: string;
   },
 ): Promise<FetchQuestionsResult> {
   // Clamp count to a safe limit so the query can't be abused if misconfigured.
   const safeCount = Math.max(1, Math.min(opts.count, 20));
+  const historyPromise = fetchAttemptedQuestionTexts(client, opts.userId, opts.difficulty)
+    .then((attempted) => {
+      for (const text of cachedAttempts(opts.userId)) attempted.add(text);
+      return attempted;
+    })
+    .catch((historyError) => {
+      console.warn('[MathWake][Challenge] attempt history unavailable:', {
+        message: historyError instanceof Error ? historyError.message : 'unknown',
+      });
+      return cachedAttempts(opts.userId);
+    });
 
   // Select only verified columns. The DB column is "correct_answer"; we
   // map it to the internal property name "answer" so callers are unchanged.
   // "options" is intentionally omitted — the column does not exist in the
   // live schema; the QuestionRow.options field will always be null.
-  let query = client
-    .from('questions')
-    .select('id,difficulty,topic,question_text,correct_answer')
-    .eq('difficulty', opts.difficulty);
+  type DbRow = { id: string; difficulty: string; topic: string; question_text: string; correct_answer: string };
+  const makeQuestionQuery = () => {
+    let query = client
+      .from('questions')
+      .select('id,difficulty,topic,question_text,correct_answer')
+      .eq('difficulty', opts.difficulty);
+    if (opts.topics && opts.topics.length > 0) query = query.in('topic', opts.topics);
+    return query;
+  };
 
-  if (opts.topics && opts.topics.length > 0) {
-    query = query.in('topic', opts.topics);
-  }
-
-  // RANDOM() via column name hint — Supabase/PostgREST doesn't support
-  // ORDER BY RANDOM() directly. We fetch a larger pool and shuffle client-side.
-  const poolSize = safeCount * 4;
-  const { data, error } = await query.limit(poolSize);
-
-  if (error) {
-    throw new Error(`Gagal mengambil soal: ${error.message}`);
+  // Fetch every matching row in stable pages, then shuffle the complete pool.
+  const data: DbRow[] = [];
+  for (let offset = 0; ; offset += QUESTION_PAGE_SIZE) {
+    const { data: pageData, error } = await makeQuestionQuery()
+      .order('id', { ascending: true })
+      .range(offset, offset + QUESTION_PAGE_SIZE - 1);
+    if (error) throw new Error(`Gagal mengambil soal: ${error.message}`);
+    const page = (pageData ?? []) as DbRow[];
+    data.push(...page);
+    if (page.length < QUESTION_PAGE_SIZE) break;
   }
 
   // Map correct_answer → answer so the rest of the app is unaffected.
-  type DbRow = { id: string; difficulty: string; topic: string; question_text: string; correct_answer: string };
-  const rows: QuestionRow[] = ((data ?? []) as DbRow[]).map((row) => ({
+  const rows: QuestionRow[] = data.map((row) => ({
     id: row.id,
     difficulty: row.difficulty,
     topic: row.topic,
@@ -118,13 +188,14 @@ export async function fetchQuestions(
     options: null,          // no options column in DB
   }));
 
-  // Fisher-Yates shuffle for uniform randomness.
-  for (let i = rows.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [rows[i], rows[j]] = [rows[j], rows[i]];
-  }
+  // attempts has no question_id column, so match its verified question_text
+  // field. If RLS/network blocks history, still use the full shuffled pool.
+  const attempted = await historyPromise;
 
-  const selected = rows.slice(0, safeCount);
+  const unseen = rows.filter((row) => !attempted.has(normalizeQuestionText(row.question_text)));
+  const seen = rows.filter((row) => attempted.has(normalizeQuestionText(row.question_text)));
+  const candidates = [...shuffle(unseen), ...shuffle(seen)];
+  const selected = candidates.slice(0, safeCount);
   const shortfall: FetchQuestionsResult['shortfall'] =
     selected.length === 0 ? 'empty' : selected.length < safeCount ? 'partial' : 'none';
 
@@ -180,6 +251,7 @@ export async function recordAttempt(
   client: SupabaseClient,
   input: RecordAttemptInput,
 ): Promise<void> {
+  rememberAttempt(input.userId, input.question.question_text);
   const row: Record<string, unknown> = {
     user_id: input.userId,
     topic: input.question.topic,

@@ -1,5 +1,7 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
+import { Image } from 'expo-image';
+import { SymbolView } from 'expo-symbols';
 import {
     ActivityIndicator,
     KeyboardAvoidingView,
@@ -13,7 +15,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { androidRipple } from '@/components/ui/android-ripple';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { startGoogleOAuth } from '@/lib/auth-oauth';
 import { supabase } from '@/lib/supabase';
@@ -67,6 +70,7 @@ export default function LoginScreen() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -135,9 +139,14 @@ export default function LoginScreen() {
 
         {/* Header */}
         <View style={s.header}>
-          <View style={s.logoMark}>
-            <ThemedText style={s.logoEmoji}>⏰</ThemedText>
-          </View>
+          <Image
+            source={theme.background === '#121212'
+              ? require('@/assets/images/mathwake-mark.png')
+              : require('@/assets/images/mathwake-mark-light.png')}
+            style={s.logoMark}
+            contentFit="contain"
+            accessible={false}
+          />
           <ThemedText type="title" style={s.appName}>MathWake</ThemedText>
           <ThemedText type="small" themeColor="textSecondary" style={s.tagline}>
             Bangun lebih cerdas setiap hari
@@ -154,7 +163,7 @@ export default function LoginScreen() {
             <TextInput
               style={[
                 s.input,
-                { color: theme.text, borderColor: emailError ? '#EF4444' : theme.backgroundSelected },
+                { color: theme.text, borderColor: emailError ? theme.danger : theme.border },
               ]}
               placeholder="kamu@email.com"
               placeholderTextColor={theme.textSecondary}
@@ -176,21 +185,41 @@ export default function LoginScreen() {
           {/* Password */}
           <View style={s.fieldGroup}>
             <ThemedText type="small" style={s.label}>Password</ThemedText>
-            <TextInput
-              style={[
-                s.input,
-                { color: theme.text, borderColor: passwordError ? '#EF4444' : theme.backgroundSelected },
-              ]}
-              placeholder="••••••••"
-              placeholderTextColor={theme.textSecondary}
-              secureTextEntry
-              autoComplete="current-password"
-              value={password}
-              onChangeText={(v) => { setPassword(v); setPasswordError(null); setFormError(null); }}
-              onSubmitEditing={handleLogin}
-              returnKeyType="done"
-              editable={!busy}
-            />
+            <View style={s.passwordContainer}>
+              <TextInput
+                style={[
+                  s.input,
+                  s.passwordInput,
+                  { color: theme.text, borderColor: passwordError ? theme.danger : theme.border },
+                ]}
+                placeholder="••••••••"
+                placeholderTextColor={theme.textSecondary}
+                secureTextEntry={!passwordVisible}
+                autoComplete="current-password"
+                value={password}
+                onChangeText={(v) => { setPassword(v); setPasswordError(null); setFormError(null); }}
+                onSubmitEditing={handleLogin}
+                returnKeyType="done"
+                editable={!busy}
+              />
+              <Pressable
+                onPress={() => setPasswordVisible((v) => !v)}
+                disabled={busy}
+                accessibilityRole="button"
+                accessibilityLabel={passwordVisible ? 'Sembunyikan password' : 'Tampilkan password'}
+                style={s.eyeButton}
+                hitSlop={8}>
+                <SymbolView
+                  name={
+                    passwordVisible
+                      ? { ios: 'eye.slash', android: 'visibility_off', web: 'visibility_off' }
+                      : { ios: 'eye', android: 'visibility', web: 'visibility' }
+                  }
+                  size={20}
+                  tintColor={theme.textSecondary}
+                />
+              </Pressable>
+            </View>
             {passwordError && (
               <ThemedText type="small" style={s.fieldError}>{passwordError}</ThemedText>
             )}
@@ -201,13 +230,15 @@ export default function LoginScreen() {
             onPress={() => router.push('/password-recovery' as never)}
             disabled={busy}
             accessibilityRole="link"
-            accessibilityLabel="Lupa password">
+            accessibilityLabel="Lupa password"
+            hitSlop={8}
+            style={({ pressed }) => [s.inlineLink, pressed && s.linkPressed]}>
             <ThemedText type="small" style={s.forgotPasswordText}>Lupa password?</ThemedText>
           </Pressable>
 
           {/* Form-level error */}
           {formError && (
-            <View style={s.formErrorBox}>
+            <View style={s.formErrorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
               <ThemedText type="small" style={s.formErrorText}>{formError}</ThemedText>
             </View>
           )}
@@ -218,9 +249,10 @@ export default function LoginScreen() {
             onPress={handleLogin}
             disabled={busy}
             accessibilityRole="button"
-            accessibilityLabel="Masuk ke akun">
+            accessibilityLabel="Masuk ke akun"
+            android_ripple={androidRipple(theme.onPrimary)}>
             {loading
-              ? <ActivityIndicator color="#ffffff" />
+              ? <ActivityIndicator color={theme.onPrimary} />
               : <ThemedText style={s.primaryButtonText}>Masuk</ThemedText>
             }
           </Pressable>
@@ -236,7 +268,8 @@ export default function LoginScreen() {
             onPress={handleGoogleLogin}
             disabled={busy}
             accessibilityRole="button"
-            accessibilityLabel="Masuk dengan Google">
+            accessibilityLabel="Masuk dengan Google"
+            android_ripple={androidRipple(theme.primarySoft)}>
             {googleLoading
               ? <ActivityIndicator color={theme.text} />
               : <ThemedText style={s.googleButtonText}>Masuk dengan Google</ThemedText>
@@ -251,7 +284,9 @@ export default function LoginScreen() {
             onPress={() => router.push('/auth/register')}
             disabled={busy}
             accessibilityRole="link"
-            accessibilityLabel="Buat akun baru">
+            accessibilityLabel="Buat akun baru"
+            hitSlop={8}
+            style={({ pressed }) => [s.inlineLink, pressed && s.linkPressed]}>
             <ThemedText type="small" style={s.linkText}>Daftar</ThemedText>
           </Pressable>
         </View>
@@ -292,14 +327,7 @@ function styles(
     logoMark: {
       width: 80,
       height: 80,
-      borderRadius: 24,
-      backgroundColor: '#208AEF',
-      alignItems: 'center',
-      justifyContent: 'center',
       marginBottom: Spacing.two,
-    },
-    logoEmoji: {
-      fontSize: 38,
     },
     appName: {
       fontSize: 36,
@@ -310,7 +338,7 @@ function styles(
       textAlign: 'center',
     },
     card: {
-      borderRadius: 20,
+      borderRadius: Radius.block,
       padding: Spacing.four,
       gap: Spacing.three,
     },
@@ -325,27 +353,46 @@ function styles(
       fontWeight: '600',
     },
     input: {
+      minHeight: 48,
       borderWidth: 1.5,
-      borderRadius: 12,
+      borderRadius: Radius.control,
       paddingHorizontal: Spacing.three,
       paddingVertical: Platform.OS === 'ios' ? 14 : 10,
       fontSize: 16,
       backgroundColor: theme.background,
     },
+    passwordContainer: {
+      position: 'relative',
+      justifyContent: 'center',
+    },
+    passwordInput: {
+      paddingRight: 48,
+    },
+    eyeButton: {
+      position: 'absolute',
+      right: Spacing.two,
+      height: '100%',
+      justifyContent: 'center',
+      alignItems: 'center',
+      minWidth: 44,
+      minHeight: 44,
+    },
     fieldError: {
-      color: '#EF4444',
+      color: theme.danger,
     },
     formErrorBox: {
-      backgroundColor: '#FEE2E2',
-      borderRadius: 10,
+      backgroundColor: theme.dangerSoft,
+      borderRadius: Radius.control,
       padding: Spacing.three,
     },
     formErrorText: {
-      color: '#B91C1C',
+      color: theme.danger,
     },
     primaryButton: {
-      backgroundColor: '#208AEF',
-      borderRadius: 14,
+      backgroundColor: theme.primary,
+      borderRadius: Radius.control,
+      minHeight: 52,
+      justifyContent: 'center',
       paddingVertical: 16,
       alignItems: 'center',
       marginTop: Spacing.one,
@@ -357,7 +404,7 @@ function styles(
       opacity: 0.6,
     },
     primaryButtonText: {
-      color: '#ffffff',
+      color: theme.onPrimary,
       fontWeight: '700',
       fontSize: 16,
     },
@@ -375,7 +422,9 @@ function styles(
     googleButton: {
       borderWidth: 1,
       borderColor: theme.backgroundSelected,
-      borderRadius: 14,
+      borderRadius: Radius.control,
+      minHeight: 52,
+      justifyContent: 'center',
       paddingVertical: 15,
       alignItems: 'center',
     },
@@ -391,10 +440,12 @@ function styles(
       fontSize: 16,
     },
     forgotPasswordText: {
-      color: '#208AEF',
+      color: theme.primaryStrong,
       fontWeight: '600',
       textAlign: 'right',
     },
+    inlineLink: { minHeight: 48, justifyContent: 'center' },
+    linkPressed: { opacity: 0.75 },
     footer: {
       flexDirection: 'row',
       justifyContent: 'center',
@@ -402,7 +453,7 @@ function styles(
       alignItems: 'center',
     },
     linkText: {
-      color: '#208AEF',
+      color: theme.primaryStrong,
       fontWeight: '700',
     },
   });

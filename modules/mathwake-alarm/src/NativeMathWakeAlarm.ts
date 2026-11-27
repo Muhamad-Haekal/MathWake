@@ -28,6 +28,7 @@ declare class MathWakeAlarmModule extends NativeModule<MathWakeAlarmModuleEvents
   scheduleAlarmWithSnooze?: (options: NativeAlarmScheduleOptions) => Promise<NativeScheduleResult>;
   scheduleTimer: (deadlineAtMs: number) => Promise<NativeScheduleResult>;
   cancelTimer: () => Promise<void>;
+  dismissTimerRinger: () => Promise<void>;
   cancelAlarm: (alarmId: string) => Promise<void>;
   updateAlarmSnoozeMinutes: (alarmId: string, snoozeMinutes: number) => Promise<boolean>;
   dismissNotification: (alarmId: string) => Promise<void>;
@@ -65,6 +66,7 @@ declare class MathWakeAlarmModule extends NativeModule<MathWakeAlarmModuleEvents
   getActiveAlarmEvent: () => Promise<NativeActiveAlarmEvent | null>;
   getLiveAlarmIds: () => Promise<string[]>;
   getAlarmEvent: (eventId: string) => Promise<NativeAlarmEvent | null>;
+  getLiveScheduledSnoozes?: () => Promise<NativeAlarmEvent[]>;
   transitionAlarmEvent: (
     eventId: string,
     generation: string,

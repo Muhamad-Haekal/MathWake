@@ -69,6 +69,14 @@ class MathWakeAlarmModule : Module() {
       appCtx()?.let { cancelTimerSystem(it) }
     }
 
+    AsyncFunction("dismissTimerRinger") {
+      appCtx()?.let { context ->
+        context.stopService(Intent(context, TimerRingerService::class.java))
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        nm.cancel(TIMER_NOTIFICATION_ID)
+      }
+    }
+
     AsyncFunction("dismissNotification") { alarmId: String ->
       dismissNotificationImpl(alarmId)
     }
@@ -116,8 +124,12 @@ class MathWakeAlarmModule : Module() {
 
     AsyncFunction("getLiveAlarmIds") {
       val context = appCtx() ?: return@AsyncFunction emptyList<String>()
-      AlarmEventLedger.all(sharedAlarmEventStore(prefs(context)))
-        .filter { it.state == AlarmEventState.QUEUED || it.state == AlarmEventState.RINGING }
+      val store = sharedAlarmEventStore(prefs(context))
+      AlarmEventLedger.all(store)
+        .filter {
+          it.state == AlarmEventState.QUEUED || it.state == AlarmEventState.RINGING ||
+            (it.state == AlarmEventState.SCHEDULED && it.isSnooze && AlarmSnoozeCoordinator.hasLiveSnoozeSource(store, it))
+        }
         .map { it.alarmId }
         .distinct()
     }
@@ -135,6 +147,11 @@ class MathWakeAlarmModule : Module() {
       val event = AlarmEventLedger.get(sharedAlarmEventStore(prefs(context)), eventId)
         ?: return@AsyncFunction null
       event.toMap()
+    }
+
+    AsyncFunction("getLiveScheduledSnoozes") {
+      val context = appCtx() ?: return@AsyncFunction emptyList<Map<String, Any?>>()
+      AlarmSnoozeCoordinator.liveScheduledSnoozes(sharedAlarmEventStore(prefs(context))).map { it.toMap() }
     }
 
     AsyncFunction("transitionAlarmEvent") { eventId: String, generation: String, targetState: String ->
@@ -517,13 +534,22 @@ class MathWakeAlarmModule : Module() {
   }
 
   /**
-   * Opens the system App info page for this app. Used as the grant path for
-   * the full-screen intent permission (Android 14+), which exposes no
-   * dedicated settings intent: the toggle lives in the app's system pages.
-   * ACTION_APPLICATION_DETAILS_SETTINGS exists since API 9.
+   * Opens the dedicated full-screen intent setting screen on Android 14+ (API 34+),
+   * or falls back to system App Info.
    */
   private fun openAppInfoSettingsImpl(): Boolean {
     val context = appContext.reactContext ?: return false
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+      try {
+        val intent = Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+          data = Uri.parse("package:${context.packageName}")
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        return true
+      } catch (_: Exception) {
+      }
+    }
     return try {
       val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
         data = Uri.parse("package:${context.packageName}")

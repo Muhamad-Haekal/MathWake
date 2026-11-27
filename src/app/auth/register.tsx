@@ -1,5 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
+import { Image } from 'expo-image';
 import {
     ActivityIndicator,
     KeyboardAvoidingView,
@@ -12,8 +13,11 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SymbolView } from 'expo-symbols';
+
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { androidRipple } from '@/components/ui/android-ripple';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { supabase } from '@/lib/supabase';
 
@@ -93,7 +97,9 @@ export default function RegisterScreen() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [confirm, setConfirm] = useState('');
+  const [confirmVisible, setConfirmVisible] = useState(false);
 
   const [emailError, setEmailError] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
@@ -165,9 +171,18 @@ export default function RegisterScreen() {
   // ── Confirmation pending state ──────────────────────────────────────────
   if (pendingConfirmation) {
     return (
-      <View style={[s.flex, s.centerContent]}>
+      <ScrollView
+        style={s.flex}
+        contentContainerStyle={[s.centerContent, { flexGrow: 1, paddingTop: insets.top + Spacing.four, paddingBottom: insets.bottom + Spacing.four }]}
+        showsVerticalScrollIndicator={false}>
         <View style={s.confirmCard}>
-          <ThemedText style={s.confirmEmoji}>📬</ThemedText>
+          <View style={s.confirmIcon}>
+            <SymbolView
+              name={{ ios: 'envelope.open.fill', android: 'mark_email_unread', web: 'mark_email_unread' }}
+              size={36}
+              tintColor={theme.primaryStrong}
+            />
+          </View>
           <ThemedText type="subtitle" style={s.confirmTitle}>Cek email kamu</ThemedText>
           <ThemedText type="small" themeColor="textSecondary" style={s.confirmBody}>
             Kami mengirim link konfirmasi ke{'\n'}
@@ -178,11 +193,12 @@ export default function RegisterScreen() {
             style={({ pressed }) => [s.primaryButton, pressed && s.primaryButtonPressed]}
             onPress={() => router.replace('/auth/login')}
             accessibilityRole="button"
-            accessibilityLabel="Pergi ke halaman masuk">
+            accessibilityLabel="Pergi ke halaman masuk"
+            android_ripple={{ color: theme.primarySoft, foreground: true }}>
             <ThemedText style={s.primaryButtonText}>Ke halaman masuk</ThemedText>
           </Pressable>
         </View>
-      </View>
+      </ScrollView>
     );
   }
 
@@ -199,9 +215,14 @@ export default function RegisterScreen() {
 
         {/* Header */}
         <View style={s.header}>
-          <View style={s.logoMark}>
-            <ThemedText style={s.logoEmoji}>⏰</ThemedText>
-          </View>
+          <Image
+            source={theme.background === '#121212'
+              ? require('@/assets/images/mathwake-mark.png')
+              : require('@/assets/images/mathwake-mark-light.png')}
+            style={s.logoMark}
+            contentFit="contain"
+            accessible={false}
+          />
           <ThemedText type="title" style={s.appName}>MathWake</ThemedText>
           <ThemedText type="small" themeColor="textSecondary" style={s.tagline}>
             Bangun lebih cerdas setiap hari
@@ -218,7 +239,7 @@ export default function RegisterScreen() {
             <TextInput
               style={[
                 s.input,
-                { color: theme.text, borderColor: emailError ? '#EF4444' : theme.backgroundSelected },
+                { color: theme.text, borderColor: emailError ? theme.danger : theme.border },
               ]}
               placeholder="kamu@email.com"
               placeholderTextColor={theme.textSecondary}
@@ -239,20 +260,40 @@ export default function RegisterScreen() {
           {/* Password */}
           <View style={s.fieldGroup}>
             <ThemedText type="small" style={s.label}>Password</ThemedText>
-            <TextInput
-              style={[
-                s.input,
-                { color: theme.text, borderColor: passwordError ? '#EF4444' : theme.backgroundSelected },
-              ]}
-              placeholder="Minimal 6 karakter"
-              placeholderTextColor={theme.textSecondary}
-              secureTextEntry
-              autoComplete="new-password"
-              value={password}
-              onChangeText={(v) => { setPassword(v); setPasswordError(null); setConfirmError(null); setFormError(null); }}
-              returnKeyType="next"
-              editable={!loading}
-            />
+            <View style={s.passwordContainer}>
+              <TextInput
+                style={[
+                  s.input,
+                  s.passwordInput,
+                  { color: theme.text, borderColor: passwordError ? theme.danger : theme.border },
+                ]}
+                placeholder="Minimal 6 karakter"
+                placeholderTextColor={theme.textSecondary}
+                secureTextEntry={!passwordVisible}
+                autoComplete="new-password"
+                value={password}
+                onChangeText={(v) => { setPassword(v); setPasswordError(null); setConfirmError(null); setFormError(null); }}
+                returnKeyType="next"
+                editable={!loading}
+              />
+              <Pressable
+                onPress={() => setPasswordVisible((v) => !v)}
+                disabled={loading}
+                accessibilityRole="button"
+                accessibilityLabel={passwordVisible ? 'Sembunyikan password' : 'Tampilkan password'}
+                style={s.eyeButton}
+                hitSlop={8}>
+                <SymbolView
+                  name={
+                    passwordVisible
+                      ? { ios: 'eye.slash', android: 'visibility_off', web: 'visibility_off' }
+                      : { ios: 'eye', android: 'visibility', web: 'visibility' }
+                  }
+                  size={20}
+                  tintColor={theme.textSecondary}
+                />
+              </Pressable>
+            </View>
             {passwordError && (
               <ThemedText type="small" style={s.fieldError}>{passwordError}</ThemedText>
             )}
@@ -261,21 +302,41 @@ export default function RegisterScreen() {
           {/* Confirm password */}
           <View style={s.fieldGroup}>
             <ThemedText type="small" style={s.label}>Konfirmasi Password</ThemedText>
-            <TextInput
-              style={[
-                s.input,
-                { color: theme.text, borderColor: confirmError ? '#EF4444' : theme.backgroundSelected },
-              ]}
-              placeholder="Ulangi password"
-              placeholderTextColor={theme.textSecondary}
-              secureTextEntry
-              autoComplete="new-password"
-              value={confirm}
-              onChangeText={(v) => { setConfirm(v); setConfirmError(null); setFormError(null); }}
-              onSubmitEditing={handleRegister}
-              returnKeyType="done"
-              editable={!loading}
-            />
+            <View style={s.passwordContainer}>
+              <TextInput
+                style={[
+                  s.input,
+                  s.passwordInput,
+                  { color: theme.text, borderColor: confirmError ? theme.danger : theme.border },
+                ]}
+                placeholder="Ulangi password"
+                placeholderTextColor={theme.textSecondary}
+                secureTextEntry={!confirmVisible}
+                autoComplete="new-password"
+                value={confirm}
+                onChangeText={(v) => { setConfirm(v); setConfirmError(null); setFormError(null); }}
+                onSubmitEditing={handleRegister}
+                returnKeyType="done"
+                editable={!loading}
+              />
+              <Pressable
+                onPress={() => setConfirmVisible((v) => !v)}
+                disabled={loading}
+                accessibilityRole="button"
+                accessibilityLabel={confirmVisible ? 'Sembunyikan konfirmasi password' : 'Tampilkan konfirmasi password'}
+                style={s.eyeButton}
+                hitSlop={8}>
+                <SymbolView
+                  name={
+                    confirmVisible
+                      ? { ios: 'eye.slash', android: 'visibility_off', web: 'visibility_off' }
+                      : { ios: 'eye', android: 'visibility', web: 'visibility' }
+                  }
+                  size={20}
+                  tintColor={theme.textSecondary}
+                />
+              </Pressable>
+            </View>
             {confirmError && (
               <ThemedText type="small" style={s.fieldError}>{confirmError}</ThemedText>
             )}
@@ -283,7 +344,7 @@ export default function RegisterScreen() {
 
           {/* Form-level error */}
           {formError && (
-            <View style={s.formErrorBox}>
+            <View style={s.formErrorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
               <ThemedText type="small" style={s.formErrorText}>{formError}</ThemedText>
             </View>
           )}
@@ -298,9 +359,10 @@ export default function RegisterScreen() {
             onPress={handleRegister}
             disabled={loading}
             accessibilityRole="button"
-            accessibilityLabel="Buat akun baru">
+            accessibilityLabel="Buat akun baru"
+            android_ripple={androidRipple(theme.onPrimary)}>
             {loading
-              ? <ActivityIndicator color="#ffffff" />
+              ? <ActivityIndicator color={theme.onPrimary} />
               : <ThemedText style={s.primaryButtonText}>Daftar</ThemedText>
             }
           </Pressable>
@@ -313,7 +375,9 @@ export default function RegisterScreen() {
             onPress={() => router.push('/auth/login')}
             disabled={loading}
             accessibilityRole="link"
-            accessibilityLabel="Masuk ke akun">
+            accessibilityLabel="Masuk ke akun"
+            hitSlop={8}
+            style={({ pressed }) => [s.footerLink, pressed && s.primaryButtonPressed]}>
             <ThemedText type="small" style={s.linkText}>Masuk</ThemedText>
           </Pressable>
         </View>
@@ -359,14 +423,7 @@ function styles(
     logoMark: {
       width: 80,
       height: 80,
-      borderRadius: 24,
-      backgroundColor: '#208AEF',
-      alignItems: 'center',
-      justifyContent: 'center',
       marginBottom: Spacing.two,
-    },
-    logoEmoji: {
-      fontSize: 38,
     },
     appName: {
       fontSize: 36,
@@ -377,7 +434,7 @@ function styles(
       textAlign: 'center',
     },
     card: {
-      borderRadius: 20,
+      borderRadius: Radius.block,
       padding: Spacing.four,
       gap: Spacing.three,
     },
@@ -392,27 +449,46 @@ function styles(
       fontWeight: '600',
     },
     input: {
+      minHeight: 48,
       borderWidth: 1.5,
-      borderRadius: 12,
+      borderRadius: Radius.control,
       paddingHorizontal: Spacing.three,
       paddingVertical: Platform.OS === 'ios' ? 14 : 10,
       fontSize: 16,
       backgroundColor: theme.background,
     },
+    passwordContainer: {
+      position: 'relative',
+      justifyContent: 'center',
+    },
+    passwordInput: {
+      paddingRight: 48,
+    },
+    eyeButton: {
+      position: 'absolute',
+      right: Spacing.two,
+      height: '100%',
+      justifyContent: 'center',
+      alignItems: 'center',
+      minWidth: 44,
+      minHeight: 44,
+    },
     fieldError: {
-      color: '#EF4444',
+      color: theme.danger,
     },
     formErrorBox: {
-      backgroundColor: '#FEE2E2',
-      borderRadius: 10,
+      backgroundColor: theme.dangerSoft,
+      borderRadius: Radius.control,
       padding: Spacing.three,
     },
     formErrorText: {
-      color: '#B91C1C',
+      color: theme.danger,
     },
     primaryButton: {
-      backgroundColor: '#208AEF',
-      borderRadius: 14,
+      backgroundColor: theme.primary,
+      borderRadius: Radius.control,
+      minHeight: 52,
+      justifyContent: 'center',
       paddingVertical: 16,
       alignItems: 'center',
       marginTop: Spacing.one,
@@ -424,7 +500,7 @@ function styles(
       opacity: 0.6,
     },
     primaryButtonText: {
-      color: '#ffffff',
+      color: theme.onPrimary,
       fontWeight: '700',
       fontSize: 16,
     },
@@ -434,18 +510,25 @@ function styles(
       gap: Spacing.one,
       alignItems: 'center',
     },
+    footerLink: { minHeight: 48, justifyContent: 'center' },
     linkText: {
-      color: '#208AEF',
+      color: theme.primaryStrong,
       fontWeight: '700',
     },
     // Confirmation state
     confirmCard: {
       alignItems: 'center',
       gap: Spacing.three,
+      width: '100%',
       maxWidth: 360,
     },
-    confirmEmoji: {
-      fontSize: 56,
+    confirmIcon: {
+      width: 72,
+      height: 72,
+      borderRadius: Radius.block,
+      backgroundColor: theme.primarySoft,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     confirmTitle: {
       textAlign: 'center',

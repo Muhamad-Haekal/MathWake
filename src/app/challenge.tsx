@@ -18,14 +18,19 @@ import {
     StyleSheet,
     TextInput,
     View,
+    useWindowDimensions,
 } from 'react-native';
+import { SymbolView } from 'expo-symbols';
+import Animated, { FadeIn, FadeInDown, Keyframe, SlideInRight, useReducedMotion } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Danger, Radius, Spacing } from '@/constants/theme';
+import { androidRipple } from '@/components/ui/android-ripple';
+import { Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
 import { useTheme } from '@/hooks/use-theme';
+import { greetingForOccurrence } from '@/lib/greeting';
 import { setAlarmActive, snoozeMinutesOrDefault } from '@/lib/alarms';
 import { isAlarmAudioPlaying, startAlarmAudio, stopAlarmAudio } from '@/lib/alarm-audio';
 import {
@@ -67,7 +72,6 @@ import { supabase } from '@/lib/supabase';
 //   });
 // ---------------------------------------------------------------------------
 
-const SUCCESS_GREEN = '#22C55E' as const;
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -79,11 +83,20 @@ const SUCCESS_GREEN = '#22C55E' as const;
 // 'failed' and the alarm keeps ringing until the whole set is solved.
 // ---------------------------------------------------------------------------
 
+/** UI-only snapshot taken on tap; compared with reducer counters to render feedback. */
+interface TapSnapshot {
+  index: number;
+  option: string | null;
+  correctAt: number;
+  mistakesAt: number;
+}
+
 export default function ChallengeScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const reduceMotion = useReducedMotion();
   const params = useLocalSearchParams<{
     alarmId?: string;
     alarmTitle?: string;
@@ -127,7 +140,10 @@ export default function ChallengeScreen() {
     eventId && !eventId.startsWith('mw1:') ? occurrenceKey : '',
   );
   const occurrenceValidated = validatedOccurrenceKey === occurrenceKey;
-  const s = styles(insets);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const s = styles(insets, theme, windowHeight < 700);
+  // UI-only: which option was tapped and the counters at tap time, for feedback.
+  const [lastTap, setLastTap] = useState<TapSnapshot | null>(null);
 
   useEffect(() => {
     if (!alarmId || !eventId || !generation) {
@@ -225,7 +241,7 @@ export default function ChallengeScreen() {
     if (!user) return;
     let cancelled = false;
 
-    fetchQuestions(supabase, { difficulty, count: questionCount })
+    fetchQuestions(supabase, { difficulty, count: questionCount, userId: user.id })
       .then((result) => {
         if (cancelled || !isMounted.current) return;
         if (result.shortfall === 'empty') {
@@ -351,10 +367,19 @@ export default function ChallengeScreen() {
         disabled={snoozeBusy || !occurrenceValidated || !!alarmInactive}
         style={({ pressed }) => [s.snoozeButton, pressed && s.pressed, (snoozeBusy || !!alarmInactive) && s.disabled]}
         accessibilityRole="button"
-        accessibilityLabel={`Tunda alarm ${snoozeMinutes} menit`}>
-        {snoozeBusy ? <ActivityIndicator color="#ffffff" /> : <ThemedText style={s.snoozeButtonText}>Snooze {snoozeMinutes} menit</ThemedText>}
+        accessibilityLabel={`Tunda alarm ${snoozeMinutes} menit`}
+        accessibilityState={{ disabled: snoozeBusy || !occurrenceValidated || !!alarmInactive, busy: snoozeBusy }}
+        android_ripple={androidRipple(theme.primarySoft)}>
+        {snoozeBusy ? (
+          <ActivityIndicator color={theme.textSecondary} />
+        ) : (
+          <View style={s.buttonRow}>
+            <SymbolView name={{ ios: 'zzz', android: 'snooze', web: 'snooze' }} size={18} tintColor={theme.textSecondary} />
+            <ThemedText style={s.snoozeButtonText}>Tunda {snoozeMinutes} menit</ThemedText>
+          </View>
+        )}
       </Pressable>
-      {snoozeError ? <ThemedText type="small" style={s.snoozeError}>{snoozeError}</ThemedText> : null}
+      {snoozeError ? <ThemedText type="small" style={s.snoozeError} accessibilityRole="alert">{snoozeError}</ThemedText> : null}
     </View>
   ) : null;
 
@@ -621,7 +646,7 @@ export default function ChallengeScreen() {
   if (!occurrenceValidated) {
     return (
       <ThemedView style={s.center}>
-        <ActivityIndicator color={Accent} />
+        <ActivityIndicator color={theme.primary} />
       </ThemedView>
     );
   }
@@ -639,7 +664,7 @@ export default function ChallengeScreen() {
   if (alarmInactive) {
     return (
       <ThemedView style={s.center}>
-        <ThemedText style={s.resultIcon}>{alarmInactive === 'snoozed' ? '⏰' : '✓'}</ThemedText>
+        <ResultBadge tone={alarmInactive === 'snoozed' ? 'neutral' : 'success'} icon={alarmInactive === 'snoozed' ? 'snooze' : 'check'} theme={theme} />
         <ThemedText style={s.resultTitle}>{alarmInactive === 'snoozed' ? 'Alarm ditunda' : 'Alarm sudah tidak aktif'}</ThemedText>
         {alarmInactive === 'snoozed' ? <ThemedText type="small" themeColor="textSecondary" style={s.resultSub}>Alarm akan berbunyi kembali dalam {snoozeMinutes} menit.</ThemedText> : null}
         <Pressable style={({ pressed }) => [s.doneButton, pressed && s.pressed]} onPress={handleDone} accessibilityRole="button" accessibilityLabel="Kembali">
@@ -652,11 +677,13 @@ export default function ChallengeScreen() {
   if (state.phase.kind === 'loading') {
     return (
       <ThemedView style={s.center}>
-        <ActivityIndicator size="large" color={Accent} />
-        <ThemedText type="small" themeColor="textSecondary" style={s.loadingLabel}>
-          Memuat soal…
-        </ThemedText>
-        {snoozeAction}
+        <View style={s.centerBody} accessibilityLiveRegion="polite">
+          <ActivityIndicator size="large" color={theme.primary} />
+          <ThemedText type="small" themeColor="textSecondary" style={s.loadingLabel}>
+            Menyiapkan soal…
+          </ThemedText>
+          {snoozeAction}
+        </View>
       </ThemedView>
     );
   }
@@ -664,7 +691,8 @@ export default function ChallengeScreen() {
   if (state.phase.kind === 'error') {
     return (
       <ThemedView style={s.center}>
-        <ThemedText type="smallBold" style={{ color: Danger }}>
+        <ResultBadge tone="danger" icon="error" theme={theme} />
+        <ThemedText style={s.resultTitle}>
           Soal tidak dapat dimuat
         </ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={s.errorBody}>
@@ -685,7 +713,8 @@ export default function ChallengeScreen() {
   if (state.phase.kind === 'empty') {
     return (
       <ThemedView style={s.center}>
-        <ThemedText type="smallBold">Belum ada soal</ThemedText>
+        <ResultBadge tone="neutral" icon="empty" theme={theme} />
+        <ThemedText style={s.resultTitle}>Belum ada soal</ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={s.errorBody}>
           Soal untuk level {difficulty} belum tersedia. Hubungi administrator.
         </ThemedText>
@@ -706,61 +735,91 @@ export default function ChallengeScreen() {
     const total = state.questions.length;
     const accuracy = total > 0 ? Math.round((correctCount / total) * 100) : 0;
     const passed = status === 'completed';
+    const successGreeting = greetingForOccurrence(triggerAtMs, new Date());
+    const timedOut = !passed && timeLimitSeconds > 0 && state.sessionElapsedMs >= timeLimitSeconds * 1000;
+    const tooManyMistakes = !passed && maxMistakes > 0 && state.mistakeCount >= maxMistakes;
+    const elapsedSec = Math.round(state.sessionElapsedMs / 1000);
 
     return (
       <ThemedView style={s.center}>
-        <ThemedText style={s.resultIcon}>{passed ? '✅' : '❌'}</ThemedText>
-        <ThemedText style={s.resultTitle}>
-          {passed ? 'Tantangan selesai!' : 'Tantangan gagal'}
-        </ThemedText>
-        <ThemedText type="small" themeColor="textSecondary" style={s.resultSub}>
-          {correctCount} dari {total} benar · {accuracy}% akurasi
-        </ThemedText>
-        {!passed && timeLimitSeconds > 0 && state.sessionElapsedMs >= timeLimitSeconds * 1000 ? (
-          <ThemedText type="small" style={[s.resultSub, { color: Danger }]}>
-            Waktu habis
+        <View style={s.centerBody}>
+          <ResultBadge tone={passed ? 'success' : 'danger'} icon={passed ? 'check' : 'error'} theme={theme} />
+          <ThemedText style={s.resultTitle} accessibilityRole="header">
+            {passed ? 'Tantangan selesai!' : 'Tantangan gagal'}
           </ThemedText>
-        ) : null}
-        {!passed && maxMistakes > 0 && state.mistakeCount >= maxMistakes ? (
-          <ThemedText type="small" style={[s.resultSub, { color: Danger }]}>
-            Terlalu banyak kesalahan ({state.mistakeCount})
+          <ThemedText type="small" themeColor="textSecondary" style={s.resultSub}>
+            {passed
+              ? `Alarm dimatikan. ${successGreeting}`
+              : 'Alarm masih berbunyi sampai semua soal terjawab benar.'}
           </ThemedText>
-        ) : null}
 
-        {passed ? (
-          // Passed: dismiss the challenge screen.
-          <Pressable
-            style={({ pressed }) => [
-              s.doneButton,
-              { backgroundColor: SUCCESS_GREEN },
-              pressed && s.pressed,
-            ]}
-            onPress={handleDone}
-            accessibilityRole="button"
-            accessibilityLabel="Selesai">
-            <ThemedText style={s.doneButtonText}>Selesai</ThemedText>
-          </Pressable>
-        ) : (
-          // Failed: offer retry (new session, same config) or dismiss.
-          // Alarm is NOT stopped — it will keep ringing until the user passes.
-          <View style={s.retryRow}>
-            {snoozeAction}
-            <Pressable
-              style={({ pressed }) => [s.retryButton, pressed && s.pressed]}
-              onPress={handleRetry}
-              accessibilityRole="button"
-              accessibilityLabel="Coba lagi">
-              <ThemedText style={s.retryButtonText}>Coba Lagi</ThemedText>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [s.dismissButton, pressed && s.pressed]}
-              onPress={handleDone}
-              accessibilityRole="button"
-              accessibilityLabel="Tutup">
-              <ThemedText type="small" themeColor="textSecondary">Tutup</ThemedText>
-            </Pressable>
+          <View style={s.statsRow} accessible accessibilityLabel={`${correctCount} dari ${total} benar, ${accuracy}% akurasi, ${elapsedSec} detik`}>
+            <View style={s.stat}>
+              <ThemedText style={s.statValue}>{correctCount}/{total}</ThemedText>
+              <ThemedText style={s.statLabel} themeColor="textSecondary">benar</ThemedText>
+            </View>
+            <View style={s.statDivider} />
+            <View style={s.stat}>
+              <ThemedText style={s.statValue}>{accuracy}%</ThemedText>
+              <ThemedText style={s.statLabel} themeColor="textSecondary">akurasi</ThemedText>
+            </View>
+            <View style={s.statDivider} />
+            <View style={s.stat}>
+              <ThemedText style={s.statValue}>{formatClock(elapsedSec)}</ThemedText>
+              <ThemedText style={s.statLabel} themeColor="textSecondary">waktu</ThemedText>
+            </View>
           </View>
-        )}
+
+          {timedOut ? (
+            <View style={s.reasonPill}>
+              <SymbolView name={{ ios: 'timer', android: 'timer', web: 'timer' }} size={16} tintColor={theme.danger} />
+              <ThemedText style={s.reasonText}>Waktu habis</ThemedText>
+            </View>
+          ) : null}
+          {tooManyMistakes ? (
+            <View style={s.reasonPill}>
+              <SymbolView name={{ ios: 'xmark.circle.fill', android: 'cancel', web: 'cancel' }} size={16} tintColor={theme.danger} />
+              <ThemedText style={s.reasonText}>Terlalu banyak kesalahan ({state.mistakeCount})</ThemedText>
+            </View>
+          ) : null}
+
+          {passed ? (
+            // Passed: dismiss the challenge screen.
+            <View style={s.resultActions}>
+              <Pressable
+                style={({ pressed }) => [
+                  s.doneButton,
+                  { backgroundColor: theme.success },
+                  pressed && s.pressed,
+                ]}
+                onPress={handleDone}
+                accessibilityRole="button"
+                accessibilityLabel="Selesai">
+                <ThemedText style={s.doneButtonText}>Selesai</ThemedText>
+              </Pressable>
+            </View>
+          ) : (
+            // Failed: offer retry (new session, same config) or dismiss.
+            // Alarm is NOT stopped — it will keep ringing until the user passes.
+            <View style={[s.resultActions, s.retryRow]}>
+              <Pressable
+                style={({ pressed }) => [s.retryButton, pressed && s.pressed]}
+                onPress={handleRetry}
+                accessibilityRole="button"
+                accessibilityLabel="Coba lagi">
+                <ThemedText style={s.retryButtonText}>Coba Lagi</ThemedText>
+              </Pressable>
+              {snoozeAction}
+              <Pressable
+                style={({ pressed }) => [s.dismissButton, pressed && s.pressed]}
+                onPress={handleDone}
+                accessibilityRole="button"
+                accessibilityLabel="Tutup">
+                <ThemedText style={s.dismissText}>Tutup</ThemedText>
+              </Pressable>
+            </View>
+          )}
+        </View>
       </ThemedView>
     );
   }
@@ -768,7 +827,6 @@ export default function ChallengeScreen() {
   // Playing state.
   const question = state.questions[state.currentIndex];
   const totalQ = state.questions.length;
-  const progressPct = totalQ > 0 ? state.currentIndex / totalQ : 0;
 
   const remainingMs =
     timeLimitSeconds > 0
@@ -779,115 +837,225 @@ export default function ChallengeScreen() {
 
   // Show a "last chance" hint when the user is on their second wrong answer.
   const isLastChance = state.perQuestionMistakes === WRONGS_BEFORE_ADVANCE - 1;
+  const forcedAdvance = state.perQuestionMistakes >= WRONGS_BEFORE_ADVANCE;
   // Disable submit while a transition is in progress (isSubmitting.current)
   // or while the wrong-feedback is showing after the third mistake.
   const submitDisabled =
     state.input.trim() === '' || (state.lastWasWrong && state.perQuestionMistakes >= WRONGS_BEFORE_ADVANCE);
+
+  // Presentation-only feedback, derived by comparing reducer counters with the
+  // snapshot taken at tap time. The reducer remains the single source of truth.
+  const tapIsCurrent = lastTap !== null && lastTap.index === state.currentIndex;
+  const showCorrect = tapIsCurrent && state.correctCount > lastTap.correctAt;
+  const showWrong = state.lastWasWrong && !showCorrect;
+  const wrongPick = showWrong && tapIsCurrent && state.perQuestionMistakes > lastTap.mistakesAt ? lastTap.option : null;
+  const isMultipleChoice = !!question?.options && question.options.length > 0;
+  const questionText = question?.question_text ?? '';
+  const questionSize = fitQuestionSize(questionText, windowWidth);
+  const triesLeft = Math.max(0, WRONGS_BEFORE_ADVANCE - state.perQuestionMistakes);
+
+  const recordTap = (option: string | null) => {
+    const current = stateRef.current;
+    setLastTap({
+      index: current.currentIndex,
+      option,
+      correctAt: current.correctCount,
+      mistakesAt: current.perQuestionMistakes,
+    });
+  };
+  const submitTyped = () => {
+    recordTap(null);
+    handleSubmit();
+  };
 
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ThemedView style={s.screen}>
-        {/* Progress bar */}
-        <View style={s.progressTrack}>
-          <View style={[s.progressFill, { width: `${progressPct * 100}%` }]} />
-        </View>
+        {/* ── Status: alarm, timer, progress ─────────────────────────────── */}
+        <View style={s.statusZone}>
+          <View style={s.statusRow}>
+            <View style={s.statusTitleCol}>
+              <ThemedText style={s.eyebrow} themeColor="textSecondary">
+                {difficultyLabel(difficulty).toUpperCase()} · TANTANGAN
+              </ThemedText>
+              <ThemedText style={s.alarmTitle}>{alarmTitle}</ThemedText>
+            </View>
+            {remainingSec !== null ? (
+              <View
+                style={[s.timerPill, timeWarning && s.timerPillWarning]}
+                accessibilityRole="timer"
+                accessibilityLabel={`Sisa waktu ${remainingSec} detik`}>
+                <SymbolView
+                  name={{ ios: 'timer', android: 'timer', web: 'timer' }}
+                  size={16}
+                  tintColor={timeWarning ? theme.danger : theme.textSecondary}
+                />
+                <ThemedText style={[s.timerText, timeWarning && { color: theme.danger }]}>
+                  {formatClock(remainingSec)}
+                </ThemedText>
+              </View>
+            ) : null}
+          </View>
 
-        {/* Header row: question number + optional timer */}
-        <ThemedText type="smallBold" style={{ textAlign: 'center', marginBottom: Spacing.two }}>{alarmTitle}</ThemedText>
-        <View style={s.header}>
-          <ThemedText type="small" themeColor="textSecondary">
-            Soal {state.currentIndex + 1} dari {totalQ}
-          </ThemedText>
-          {remainingSec !== null ? (
-            <ThemedText
-              type="smallBold"
-              style={{ color: timeWarning ? Danger : undefined }}>
-              {remainingSec}s
+          <View
+            style={s.progressRow}
+            accessibilityRole="progressbar"
+            accessibilityLabel={`Soal ${state.currentIndex + 1} dari ${totalQ}`}
+            accessibilityValue={{ min: 0, max: totalQ, now: state.currentIndex }}>
+            <View style={s.segments} importantForAccessibility="no-hide-descendants">
+              {state.questions.map((q, i) => (
+                <View
+                  key={q.id ?? i}
+                  style={[
+                    s.segment,
+                    i < state.currentIndex && s.segmentDone,
+                    i === state.currentIndex && s.segmentCurrent,
+                  ]}
+                />
+              ))}
+            </View>
+            <ThemedText style={s.counter} themeColor="textSecondary" importantForAccessibility="no">
+              {Math.min(state.currentIndex + 1, totalQ)}/{totalQ}
             </ThemedText>
+          </View>
+
+          {/* Session-wide mistake indicator (maxMistakes guard) */}
+          {maxMistakes > 0 ? (
+            <View
+              style={s.mistakeRow}
+              accessible
+              accessibilityLabel={`Kesalahan ${state.mistakeCount} dari ${maxMistakes}`}>
+              <ThemedText style={s.mistakeLabel} themeColor="textSecondary">Batas salah</ThemedText>
+              <View style={s.mistakeDots}>
+                {Array.from({ length: maxMistakes }).map((_, i) => (
+                  <View
+                    key={i}
+                    style={[s.mistakeDot, i < state.mistakeCount ? s.mistakeDotFilled : s.mistakeDotEmpty]}
+                  />
+                ))}
+              </View>
+            </View>
           ) : null}
         </View>
 
-        {/* Session-wide mistake indicator (maxMistakes guard) */}
-        {maxMistakes > 0 ? (
-          <View style={s.mistakeRow}>
-            {Array.from({ length: maxMistakes }).map((_, i) => (
-              <View
-                key={i}
-                style={[
-                  s.mistakeDot,
-                  i < state.mistakeCount ? s.mistakeDotFilled : s.mistakeDotEmpty,
-                ]}
-              />
-            ))}
-          </View>
-        ) : null}
-
-        {/* Question card */}
-        <View style={[s.questionCard, { backgroundColor: theme.backgroundElement }]}>
-          <ThemedText style={s.difficultyBadge} themeColor="textSecondary">
-            {difficultyLabel(difficulty)}
-          </ThemedText>
-          <ThemedText style={s.questionText} accessibilityRole="text">
-            {question?.question_text ?? ''}
-          </ThemedText>
+        {/* ── Question: the visual focus ─────────────────────────────────── */}
+        <View style={s.questionZone}>
+          <Animated.View
+            key={state.currentIndex}
+            entering={reduceMotion ? undefined : SlideInRight.duration(240)}
+            style={[
+              s.questionCard,
+              showCorrect && s.questionCardCorrect,
+              showWrong && s.questionCardWrong,
+            ]}>
+            <ThemedText style={s.questionLabel} themeColor="textSecondary">
+              Soal {state.currentIndex + 1}
+            </ThemedText>
+            <ThemedText
+              style={[s.questionText, { fontSize: questionSize, lineHeight: Math.round(questionSize * 1.2) }]}
+              accessibilityRole="header">
+              {questionText}
+            </ThemedText>
+          </Animated.View>
         </View>
 
-        {/* Retry feedback messages */}
-        {state.lastWasWrong ? (
-          <ThemedText type="small" style={s.wrongFeedback}>
-            {isLastChance
-              ? 'Salah. Satu kesempatan lagi!'
-              : state.perQuestionMistakes >= WRONGS_BEFORE_ADVANCE
-              ? 'Jawaban salah. Lanjut ke soal berikutnya…'
-              : 'Jawaban salah. Coba lagi.'}
-          </ThemedText>
-        ) : null}
+        {/* Reserved feedback slot: fixed height so answers never jump. */}
+        <View style={s.feedbackSlot}>
+          {showCorrect ? (
+            <Animated.View
+              entering={reduceMotion ? undefined : FadeIn.duration(140)}
+              style={[s.feedback, s.feedbackCorrect]}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite">
+              <SymbolView
+                name={{ ios: 'checkmark.circle.fill', android: 'check_circle', web: 'check_circle' }}
+                size={18}
+                tintColor={theme.success}
+              />
+              <ThemedText style={[s.feedbackText, { color: theme.success }]}>Benar!</ThemedText>
+            </Animated.View>
+          ) : showWrong ? (
+            <Animated.View
+              key={`wrong-${state.perQuestionMistakes}`}
+              entering={reduceMotion ? undefined : FadeIn.duration(140)}
+              style={[s.feedback, s.feedbackWrong]}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite">
+              <SymbolView
+                name={{ ios: 'xmark.circle.fill', android: 'cancel', web: 'cancel' }}
+                size={18}
+                tintColor={theme.danger}
+              />
+              <ThemedText style={[s.feedbackText, { color: theme.danger }]}>
+                {isLastChance
+                  ? 'Salah. Satu kesempatan lagi!'
+                  : forcedAdvance
+                  ? 'Jawaban salah. Lanjut ke soal berikutnya…'
+                  : 'Jawaban salah. Coba lagi.'}
+              </ThemedText>
+              {!forcedAdvance ? (
+                <ThemedText style={s.feedbackMeta}>Sisa {triesLeft}×</ThemedText>
+              ) : null}
+            </Animated.View>
+          ) : null}
+        </View>
 
-        {/* Options (multiple choice) or free-text input */}
-        {question?.options && question.options.length > 0 ? (
-          <MultipleChoice
-            options={question.options}
-            selected={state.input}
-            disabled={state.perQuestionMistakes >= WRONGS_BEFORE_ADVANCE}
-            lastWasWrong={state.lastWasWrong}
-            correctAnswer={state.lastWasWrong ? question.answer : null}
-            onSelect={(opt) => {
-              const q = stateRef.current.questions[stateRef.current.currentIndex];
-              if (!q || stateRef.current.phase.kind !== 'playing') return;
-              // Block taps while a transition is pending or on the third mistake.
-              if (stateRef.current.perQuestionMistakes >= WRONGS_BEFORE_ADVANCE) return;
-              submitAnswer(opt);
-            }}
-          />
-        ) : (
-          <FreeTextInput
-            ref={inputRef}
-            value={state.input}
-            lastWasWrong={state.lastWasWrong}
-            onChangeText={(v) => dispatch({ type: 'SET_INPUT', value: v })}
-            onSubmit={handleSubmit}
-            theme={theme}
-          />
-        )}
+        {/* ── Answers: thumb zone ────────────────────────────────────────── */}
+        <Animated.View
+          key={`answers-${state.currentIndex}-${state.perQuestionMistakes}`}
+          entering={!reduceMotion && state.perQuestionMistakes > 0 ? SHAKE : undefined}
+          style={s.answerZone}>
+          {isMultipleChoice ? (
+            <MultipleChoice
+              options={question!.options!}
+              selected={state.input}
+              disabled={state.perQuestionMistakes >= WRONGS_BEFORE_ADVANCE || showCorrect}
+              lastWasWrong={state.lastWasWrong}
+              correctAnswer={state.lastWasWrong ? question!.answer : null}
+              correctPick={showCorrect ? lastTap!.option : null}
+              wrongPick={wrongPick}
+              theme={theme}
+              onSelect={(opt) => {
+                const q = stateRef.current.questions[stateRef.current.currentIndex];
+                if (!q || stateRef.current.phase.kind !== 'playing') return;
+                // Block taps while a transition is pending or on the third mistake.
+                if (stateRef.current.perQuestionMistakes >= WRONGS_BEFORE_ADVANCE) return;
+                recordTap(opt);
+                submitAnswer(opt);
+              }}
+            />
+          ) : (
+            <View style={s.freeAnswer}>
+              <FreeTextInput
+                ref={inputRef}
+                value={state.input}
+                lastWasWrong={state.lastWasWrong}
+                correct={showCorrect}
+                onChangeText={(v) => dispatch({ type: 'SET_INPUT', value: v })}
+                onSubmit={submitTyped}
+                theme={theme}
+              />
+              <Pressable
+                style={({ pressed }) => [
+                  s.submitButton,
+                  submitDisabled && s.submitButtonDisabled,
+                  pressed && s.pressed,
+                ]}
+                onPress={submitTyped}
+                disabled={submitDisabled}
+                accessibilityRole="button"
+                accessibilityLabel="Jawab"
+                accessibilityState={{ disabled: submitDisabled }}
+                android_ripple={androidRipple(theme.onPrimary)}>
+                <ThemedText style={s.submitButtonText}>Jawab</ThemedText>
+              </Pressable>
+            </View>
+          )}
+        </Animated.View>
 
-        {/* Submit button for free-text */}
-        {(!question?.options || question.options.length === 0) && (
-          <Pressable
-            style={({ pressed }) => [
-              s.submitButton,
-              submitDisabled && s.submitButtonDisabled,
-              pressed && s.pressed,
-            ]}
-            onPress={handleSubmit}
-            disabled={submitDisabled}
-            accessibilityRole="button"
-            accessibilityLabel="Jawab">
-            <ThemedText style={s.submitButtonText}>Jawab</ThemedText>
-          </Pressable>
-        )}
-        {snoozeAction}
+        {snoozeAction ? <View style={s.snoozeZone}>{snoozeAction}</View> : null}
       </ThemedView>
     </KeyboardAvoidingView>
   );
@@ -902,11 +1070,12 @@ const FreeTextInput = forwardRef<
   {
     value: string;
     lastWasWrong: boolean;
+    correct: boolean;
     onChangeText: (v: string) => void;
     onSubmit: () => void;
     theme: ReturnType<typeof useTheme>;
   }
->(function FreeTextInput({ value, lastWasWrong, onChangeText, onSubmit, theme }, ref) {
+>(function FreeTextInput({ value, lastWasWrong, correct, onChangeText, onSubmit, theme }, ref) {
   return (
     <TextInput
       ref={ref}
@@ -914,8 +1083,8 @@ const FreeTextInput = forwardRef<
         freeInputStyle.input,
         {
           color: theme.text,
-          borderColor: lastWasWrong ? Danger : theme.backgroundSelected,
-          backgroundColor: theme.background,
+          borderColor: correct ? theme.success : lastWasWrong ? theme.danger : theme.border,
+          backgroundColor: correct ? theme.successSoft : lastWasWrong ? theme.dangerSoft : theme.backgroundElement,
         },
       ]}
       value={value}
@@ -923,7 +1092,7 @@ const FreeTextInput = forwardRef<
       onSubmitEditing={onSubmit}
       keyboardType="numeric"
       returnKeyType="done"
-      placeholder="Ketik jawaban…"
+      placeholder="Ketik jawaban"
       placeholderTextColor={theme.textSecondary}
       autoFocus
       accessibilityLabel="Kolom jawaban"
@@ -936,11 +1105,11 @@ const freeInputStyle = StyleSheet.create({
     borderWidth: 2,
     borderRadius: Radius.control,
     paddingHorizontal: Spacing.three,
-    paddingVertical: 14,
+    minHeight: 64,
+    paddingVertical: 12,
     fontSize: 28,
     fontWeight: '700',
     textAlign: 'center',
-    marginHorizontal: Spacing.four,
     fontVariant: ['tabular-nums'],
   },
 });
@@ -951,46 +1120,66 @@ function MultipleChoice({
   disabled,
   lastWasWrong,
   correctAnswer,
+  correctPick,
+  wrongPick,
   onSelect,
+  theme,
 }: {
   options: string[];
   selected: string;
   disabled: boolean;
   lastWasWrong: boolean;
   correctAnswer: string | null;
+  correctPick: string | null;
+  wrongPick: string | null;
   onSelect: (opt: string) => void;
+  theme: ReturnType<typeof useTheme>;
 }) {
+  // Long options get a full-width row so text is never squeezed.
+  const reduceMotion = useReducedMotion();
+  const singleColumn = options.some((opt) => opt.length > 9);
   return (
-    <View style={mcStyles.grid}>
+    <View style={mcStyles.grid} accessibilityRole="radiogroup">
       {options.map((opt) => {
         const isSelected = opt === selected;
-        const isCorrectReveal = lastWasWrong && opt === correctAnswer;
-        const isWrongReveal = lastWasWrong && isSelected && !isCorrectReveal;
-
-        let bg = '#E0E1E6';
-        if (isCorrectReveal) bg = SUCCESS_GREEN;
-        else if (isWrongReveal) bg = Danger;
-        else if (isSelected && !lastWasWrong) bg = Accent;
-
+        const isCorrectReveal = (lastWasWrong && opt === correctAnswer) || opt === correctPick;
+        const isWrongReveal = lastWasWrong && (opt === wrongPick || isSelected) && !isCorrectReveal;
+        // Reveal states pair color with an icon so meaning never relies on color alone.
+        let bg: string = theme.backgroundElement;
+        let border: string = theme.border;
+        let fg: string = theme.text;
+        if (isCorrectReveal) [bg, border, fg] = [theme.successSoft, theme.success, theme.success];
+        else if (isWrongReveal) [bg, border, fg] = [theme.dangerSoft, theme.danger, theme.danger];
+        else if (isSelected && !lastWasWrong) [bg, border, fg] = [theme.primary, theme.primary, theme.onPrimary];
+        const label = isCorrectReveal ? `${opt}, jawaban benar` : isWrongReveal ? `${opt}, jawaban salah` : opt;
+        const dim = disabled && !isCorrectReveal && !isWrongReveal;
         return (
           <Pressable
             key={opt}
             style={({ pressed }) => [
               mcStyles.option,
-              { backgroundColor: bg },
-              pressed && !disabled && mcStyles.pressed,
-              disabled && mcStyles.disabled,
+              singleColumn && mcStyles.optionFull,
+              { backgroundColor: bg, borderColor: border },
+              pressed && !disabled && !reduceMotion && mcStyles.pressed,
+              pressed && !disabled && reduceMotion && mcStyles.pressedReduced,
+              dim && mcStyles.disabled,
             ]}
             onPress={() => !disabled && onSelect(opt)}
             disabled={disabled}
             accessibilityRole="button"
-            accessibilityLabel={`Opsi ${opt}`}
-            accessibilityState={{ selected: isSelected }}>
-            <ThemedText
-              style={[
-                mcStyles.optText,
-                (isSelected || isCorrectReveal || isWrongReveal) && { color: '#ffffff' },
-              ]}>
+            accessibilityLabel={`Opsi ${label}`}
+            accessibilityState={{ selected: isSelected, disabled }}
+            android_ripple={androidRipple(theme.primarySoft)}>
+            {isCorrectReveal || isWrongReveal ? (
+              <SymbolView
+                name={isCorrectReveal
+                  ? { ios: 'checkmark.circle.fill', android: 'check_circle', web: 'check_circle' }
+                  : { ios: 'xmark.circle.fill', android: 'cancel', web: 'cancel' }}
+                size={20}
+                tintColor={fg}
+              />
+            ) : null}
+            <ThemedText style={[mcStyles.optText, { color: fg }]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.8}>
               {opt}
             </ThemedText>
           </Pressable>
@@ -1004,182 +1193,261 @@ const mcStyles = StyleSheet.create({
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: Spacing.two,
-    paddingHorizontal: Spacing.four,
-    justifyContent: 'center',
+    gap: Spacing.two + 4,
   },
   option: {
-    borderRadius: Radius.control,
-    paddingHorizontal: Spacing.four,
+    flexBasis: '45%',
+    flexGrow: 1,
+    minHeight: 68,
+    borderWidth: 1.5,
+    borderRadius: Radius.block,
+    paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.three,
-    minWidth: 120,
+    flexDirection: 'row',
+    gap: Spacing.two,
     alignItems: 'center',
+    justifyContent: 'center',
   },
+  optionFull: { flexBasis: '100%' },
   optText: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    textAlign: 'center',
+    flexShrink: 1,
   },
-  pressed: { opacity: 0.85 },
-  disabled: { opacity: 0.6 },
+  pressed: { opacity: 0.85, transform: [{ scale: 0.97 }] },
+  pressedReduced: { opacity: 0.85 },
+  disabled: { opacity: 0.55 },
 });
+
+/** Small horizontal shake on a wrong answer; the system reduced-motion setting disables it. */
+const SHAKE = new Keyframe({
+  0: { transform: [{ translateX: 0 }] },
+  20: { transform: [{ translateX: -8 }] },
+  40: { transform: [{ translateX: 8 }] },
+  60: { transform: [{ translateX: -5 }] },
+  80: { transform: [{ translateX: 5 }] },
+  100: { transform: [{ translateX: 0 }] },
+}).duration(320);
+
+function formatClock(totalSec: number): string {
+  const m = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+/** Keeps short sums big and long word problems readable on narrow screens. */
+function fitQuestionSize(text: string, width: number): number {
+  const base = width < 360 ? 34 : width > 600 ? 48 : 40;
+  if (text.length > 60) return Math.max(22, base - 16);
+  if (text.length > 30) return Math.max(26, base - 10);
+  if (text.length > 16) return base - 4;
+  return base;
+}
 
 // ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
 
-function styles(insets: ReturnType<typeof useSafeAreaInsets>) {
+type BadgeIcon = 'check' | 'error' | 'snooze' | 'empty';
+const BADGE_SYMBOL = {
+  check: { ios: 'checkmark', android: 'check', web: 'check' },
+  error: { ios: 'exclamationmark', android: 'priority_high', web: 'priority_high' },
+  snooze: { ios: 'zzz', android: 'snooze', web: 'snooze' },
+  empty: { ios: 'tray', android: 'inbox', web: 'inbox' },
+} as const;
+
+function ResultBadge({
+  tone,
+  icon,
+  theme,
+}: {
+  tone: 'success' | 'danger' | 'neutral';
+  icon: BadgeIcon;
+  theme: ReturnType<typeof useTheme>;
+}) {
+  const reduceMotion = useReducedMotion();
+  const [bg, fg] =
+    tone === 'success'
+      ? [theme.successSoft, theme.success]
+      : tone === 'danger'
+      ? [theme.dangerSoft, theme.danger]
+      : [theme.primarySoft, theme.primaryStrong];
+  return (
+    <Animated.View
+      entering={reduceMotion ? undefined : FadeInDown.duration(240)}
+      style={[badgeStyles.ring, { backgroundColor: bg }]}
+      importantForAccessibility="no-hide-descendants">
+      <SymbolView name={BADGE_SYMBOL[icon]} size={40} tintColor={fg} />
+    </Animated.View>
+  );
+}
+
+const badgeStyles = StyleSheet.create({
+  ring: { width: 88, height: 88, borderRadius: 44, alignItems: 'center', justifyContent: 'center', marginBottom: Spacing.two },
+});
+
+function styles(insets: ReturnType<typeof useSafeAreaInsets>, theme: ReturnType<typeof useTheme>, compact: boolean) {
+  const primaryButton = {
+    backgroundColor: theme.primary,
+    borderRadius: Radius.control,
+    minHeight: 56,
+    paddingHorizontal: Spacing.five,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+  } as const;
+  const gutter = compact ? Spacing.three : Spacing.four;
   return StyleSheet.create({
     screen: {
       flex: 1,
       paddingTop: insets.top + Spacing.two,
-      paddingBottom: insets.bottom + Spacing.four,
-      gap: Spacing.three,
+      paddingBottom: insets.bottom + Spacing.two,
+      paddingHorizontal: gutter,
+      width: '100%',
+      maxWidth: 560,
+      alignSelf: 'center',
     },
     center: {
       flex: 1,
       alignItems: 'center',
       justifyContent: 'center',
-      padding: Spacing.four,
+      paddingHorizontal: Spacing.four,
+      paddingTop: insets.top + Spacing.four,
+      paddingBottom: insets.bottom + Spacing.four,
       gap: Spacing.three,
     },
-    loadingLabel: {
-      marginTop: Spacing.two,
-    },
-    errorBody: {
-      textAlign: 'center',
-      lineHeight: 22,
-    },
-    progressTrack: {
-      height: 4,
-      backgroundColor: '#E0E1E6',
-    },
-    progressFill: {
-      height: 4,
-      backgroundColor: Accent,
-    },
-    header: {
+    centerBody: { width: '100%', maxWidth: 420, alignItems: 'center', gap: Spacing.three },
+    loadingLabel: { marginTop: Spacing.two },
+    errorBody: { textAlign: 'center', lineHeight: 22, maxWidth: 360 },
+
+    // Status zone
+    statusZone: { gap: Spacing.three, paddingBottom: Spacing.two },
+    statusRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+    statusTitleCol: { flex: 1, gap: 2 },
+    eyebrow: { fontSize: 12, fontWeight: '700', letterSpacing: 0.8 },
+    alarmTitle: { fontSize: 18, lineHeight: 24, fontWeight: '700' },
+    timerPill: {
       flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      paddingHorizontal: Spacing.four,
-    },
-    mistakeRow: {
-      flexDirection: 'row',
-      gap: Spacing.two,
-      paddingHorizontal: Spacing.four,
-    },
-    mistakeDot: {
-      width: 12,
-      height: 12,
-      borderRadius: 6,
-    },
-    mistakeDotFilled: { backgroundColor: Danger },
-    mistakeDotEmpty: { backgroundColor: '#E0E1E6' },
-    questionCard: {
-      marginHorizontal: Spacing.four,
-      borderRadius: Radius.block,
-      padding: Spacing.four,
-      gap: Spacing.two,
-      minHeight: 140,
-      justifyContent: 'center',
-    },
-    difficultyBadge: {
-      fontSize: 12,
-      textTransform: 'uppercase',
-      letterSpacing: 0.8,
-    },
-    questionText: {
-      fontSize: 32,
-      lineHeight: 40,
-      fontWeight: '700',
-      textAlign: 'center',
-    },
-    wrongFeedback: {
-      color: Danger,
-      textAlign: 'center',
-      paddingHorizontal: Spacing.four,
-    },
-    submitButton: {
-      backgroundColor: Accent,
-      borderRadius: Radius.control,
-      paddingVertical: Spacing.three,
-      alignItems: 'center',
-      marginHorizontal: Spacing.four,
-    },
-    submitButtonDisabled: {
-      opacity: 0.4,
-    },
-    submitButtonText: {
-      color: '#ffffff',
-      fontWeight: '700',
-      fontSize: 18,
-    },
-    snoozeControl: {
       alignItems: 'center',
       gap: Spacing.one,
-      marginHorizontal: Spacing.four,
+      minHeight: 36,
+      borderRadius: Radius.chip,
+      paddingHorizontal: Spacing.three,
+      backgroundColor: theme.backgroundElement,
+      borderWidth: 1,
+      borderColor: theme.border,
     },
+    timerPillWarning: { backgroundColor: theme.dangerSoft, borderColor: theme.danger },
+    timerText: { fontSize: 16, fontWeight: '700', fontVariant: ['tabular-nums'], color: theme.text },
+    progressRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+    segments: { flex: 1, flexDirection: 'row', gap: Spacing.one },
+    segment: { flex: 1, height: 6, borderRadius: 3, backgroundColor: theme.backgroundSelected },
+    segmentDone: { backgroundColor: theme.primary },
+    segmentCurrent: { backgroundColor: theme.primarySoft, borderWidth: 1.5, borderColor: theme.primary },
+    counter: { fontSize: 14, fontWeight: '700', fontVariant: ['tabular-nums'], minWidth: 36, textAlign: 'right' },
+    mistakeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+    mistakeLabel: { fontSize: 13, fontWeight: '600' },
+    mistakeDots: { flexDirection: 'row', gap: Spacing.one + 2 },
+    mistakeDot: { width: 10, height: 10, borderRadius: 5 },
+    mistakeDotFilled: { backgroundColor: theme.danger },
+    mistakeDotEmpty: { backgroundColor: theme.backgroundSelected, borderWidth: 1, borderColor: theme.border },
+
+    // Question zone
+    questionZone: { flex: 1, justifyContent: 'center', minHeight: compact ? 140 : 180 },
+    questionCard: {
+      borderRadius: Radius.block + 4,
+      paddingHorizontal: Spacing.four,
+      paddingVertical: compact ? Spacing.four : Spacing.five,
+      gap: Spacing.two,
+      backgroundColor: theme.backgroundElement,
+      borderWidth: 1.5,
+      borderColor: theme.border,
+      alignItems: 'center',
+    },
+    questionCardCorrect: { borderColor: theme.success, backgroundColor: theme.successSoft },
+    questionCardWrong: { borderColor: theme.danger },
+    questionLabel: { fontSize: 13, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
+    questionText: { fontWeight: '800', textAlign: 'center', fontVariant: ['tabular-nums'], color: theme.text },
+
+    // Feedback slot (fixed height keeps the answer grid from jumping)
+    feedbackSlot: { minHeight: 52, justifyContent: 'center', paddingVertical: Spacing.one },
+    feedback: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.two,
+      minHeight: 44,
+      paddingHorizontal: Spacing.three,
+      borderRadius: Radius.control,
+    },
+    feedbackCorrect: { backgroundColor: theme.successSoft },
+    feedbackWrong: { backgroundColor: theme.dangerSoft },
+    feedbackText: { flex: 1, fontSize: 15, fontWeight: '700' },
+    feedbackMeta: { fontSize: 13, fontWeight: '700', color: theme.danger, fontVariant: ['tabular-nums'] },
+
+    // Answer zone
+    answerZone: { paddingBottom: Spacing.two },
+    freeAnswer: { gap: Spacing.three },
+    submitButton: { ...primaryButton, alignSelf: undefined },
+    submitButtonDisabled: { opacity: 0.45 },
+    submitButtonText: { color: theme.onPrimary, fontWeight: '700', fontSize: 18 },
+
+    // Snooze: secondary, separated from answers
+    snoozeZone: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      paddingTop: Spacing.two,
+    },
+    snoozeControl: { alignItems: 'center', gap: Spacing.one, alignSelf: 'stretch' },
     snoozeButton: {
       minHeight: 48,
       alignSelf: 'stretch',
-      backgroundColor: '#9A6D5B',
       borderRadius: Radius.control,
       paddingHorizontal: Spacing.four,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    snoozeButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
-    snoozeError: { color: Danger, textAlign: 'center' },
-    resultIcon: {
-      fontSize: 64,
-      lineHeight: 72,
-    },
-    resultTitle: {
-      fontSize: 28,
-      fontWeight: '700',
-      textAlign: 'center',
-    },
-    resultSub: {
-      textAlign: 'center',
-      lineHeight: 22,
-    },
-    doneButton: {
-      backgroundColor: Accent,
-      borderRadius: Radius.control,
+    buttonRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+    snoozeButtonText: { color: theme.textSecondary, fontSize: 16, fontWeight: '600' },
+    snoozeError: { color: theme.danger, textAlign: 'center' },
+
+    // Result / state screens
+    resultTitle: { fontSize: 28, lineHeight: 34, fontWeight: '700', textAlign: 'center' },
+    resultSub: { textAlign: 'center', lineHeight: 22 },
+    statsRow: {
+      flexDirection: 'row',
+      alignSelf: 'stretch',
+      borderRadius: Radius.block,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.backgroundElement,
       paddingVertical: Spacing.three,
-      paddingHorizontal: Spacing.five,
-      alignItems: 'center',
-      marginTop: Spacing.two,
     },
-    doneButtonText: {
-      color: '#ffffff',
-      fontWeight: '700',
-      fontSize: 16,
-    },
-    retryRow: {
+    stat: { flex: 1, alignItems: 'center', gap: 2 },
+    statDivider: { width: StyleSheet.hairlineWidth, backgroundColor: theme.border },
+    statValue: { fontSize: 22, fontWeight: '800', fontVariant: ['tabular-nums'], color: theme.text },
+    statLabel: { fontSize: 13, fontWeight: '600' },
+    reasonPill: {
+      flexDirection: 'row',
       alignItems: 'center',
       gap: Spacing.two,
-      marginTop: Spacing.two,
+      paddingHorizontal: Spacing.three,
+      minHeight: 36,
+      borderRadius: Radius.chip,
+      backgroundColor: theme.dangerSoft,
     },
-    retryButton: {
-      backgroundColor: Accent,
-      borderRadius: Radius.control,
-      paddingVertical: Spacing.three,
-      paddingHorizontal: Spacing.five,
-      alignItems: 'center',
-    },
-    retryButtonText: {
-      color: '#ffffff',
-      fontWeight: '700',
-      fontSize: 16,
-    },
-    dismissButton: {
-      paddingVertical: Spacing.two,
-      paddingHorizontal: Spacing.four,
-      alignItems: 'center',
-    },
-    pressed: { opacity: 0.8 },
-    disabled: { opacity: 0.6 },
+    reasonText: { color: theme.danger, fontSize: 14, fontWeight: '700' },
+    resultActions: { alignSelf: 'stretch', gap: Spacing.two, marginTop: Spacing.two },
+    doneButton: { ...primaryButton },
+    doneButtonText: { color: theme.onPrimary, fontWeight: '700', fontSize: 17 },
+    retryRow: { alignItems: 'stretch', alignSelf: 'stretch', gap: Spacing.two },
+    retryButton: primaryButton,
+    retryButtonText: { color: theme.onPrimary, fontWeight: '700', fontSize: 17 },
+    dismissButton: { minHeight: 48, paddingHorizontal: Spacing.four, alignItems: 'center', justifyContent: 'center' },
+    dismissText: { color: theme.textSecondary, fontSize: 16, fontWeight: '600' },
+    pressed: { opacity: 0.85, transform: [{ scale: 0.98 }] },
+    disabled: { opacity: 0.5 },
   });
 }
 

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, BottomTabInset, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
+import { androidRipple } from '@/components/ui/android-ripple';
+import { BottomTabInset, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
   createTimerState,
@@ -18,7 +19,7 @@ import {
   startTimer,
   type TimerState,
 } from '@/lib/timer';
-import { cancelNativeTimer, scheduleNativeTimer } from '@/lib/timer-native';
+import { cancelNativeTimer, dismissNativeTimerSound, scheduleNativeTimer } from '@/lib/timer-native';
 import { ensureSchedulePermission } from '@/lib/scheduling';
 
 const DEFAULT_DURATION_MS = 5 * 60 * 1000;
@@ -61,7 +62,7 @@ export default function TimerScreen() {
       await saveTimerState(next);
       if (next.status === 'running' && next.deadlineMs !== null) {
         void scheduleNativeTimer(next.deadlineMs);
-      } else {
+      } else if (next.status !== 'finished') {
         void cancelNativeTimer();
       }
     } catch {
@@ -72,7 +73,7 @@ export default function TimerScreen() {
   useEffect(() => {
     if (nativeTimerStatus === 'running' && nativeTimerDeadlineMs !== null && nativeTimerDeadlineMs !== undefined) {
       void scheduleNativeTimer(nativeTimerDeadlineMs);
-    } else {
+    } else if (nativeTimerStatus !== 'finished') {
       void cancelNativeTimer();
     }
   }, [nativeTimerDeadlineMs, nativeTimerStatus]);
@@ -117,7 +118,10 @@ export default function TimerScreen() {
     setState((current) => {
       if (!current) return current;
       const next = transform(current, Date.now());
-      if (next !== current) void persist(next);
+      if (next !== current) {
+        if (current.status === 'finished') void dismissNativeTimerSound();
+        void persist(next);
+      }
       return next;
     });
   }
@@ -130,6 +134,7 @@ export default function TimerScreen() {
     }
     setError(null);
     const next = createTimerState(minutes * 60000);
+    if (state?.status === 'finished') void dismissNativeTimerSound();
     setState(next);
     void persist(next);
   }
@@ -137,7 +142,7 @@ export default function TimerScreen() {
   if (!state) {
     return (
       <ThemedView style={styles.center}>
-        <ActivityIndicator color={Accent} />
+          <ActivityIndicator color={theme.primary} />
         <ThemedText type="small" themeColor="textSecondary">Memuat Timer…</ThemedText>
       </ThemedView>
     );
@@ -148,18 +153,19 @@ export default function TimerScreen() {
   const buttonLabel = state.status === 'running' ? 'Pause' : state.status === 'paused' ? 'Resume' : 'Start';
 
   return (
-    <ThemedView style={styles.container}>
+    <KeyboardAvoidingView style={[styles.container, { backgroundColor: theme.background }]} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView
         contentContainerStyle={{ paddingTop: insets.top + Spacing.four, paddingBottom: insets.bottom + BottomTabInset + Spacing.four }}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}>
         <View style={styles.inner}>
           <ThemedText type="subtitle">Timer</ThemedText>
           <ThemedText type="small" themeColor="textSecondary">
-            Timer memakai notifikasi Android saat selesai. Suara belum tersedia.
+            Timer berbunyi dengan suara MathWake sampai Anda menghentikannya dari notifikasi atau tombol di bawah.
           </ThemedText>
 
           <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
-            <ThemedText style={styles.clock}>{formatTimer(remainingMs)}</ThemedText>
+            <ThemedText style={styles.clock} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{formatTimer(remainingMs)}</ThemedText>
             <ThemedText type="small" themeColor="textSecondary">
               {state.status === 'finished' ? 'Selesai' : state.status === 'running' ? 'Berjalan' : state.status === 'paused' ? 'Dijeda' : 'Siap'}
             </ThemedText>
@@ -180,14 +186,25 @@ export default function TimerScreen() {
               disabled={editingDisabled}
               accessibilityRole="button"
               accessibilityLabel="Terapkan durasi timer"
-              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed, editingDisabled && styles.disabled]}>
+              android_ripple={androidRipple(theme.primarySoft)}
+              style={({ pressed }) => [styles.secondaryButton, { backgroundColor: theme.backgroundSelected }, pressed && styles.pressed, editingDisabled && styles.disabled]}>
               <ThemedText type="smallBold">Terapkan</ThemedText>
             </Pressable>
           </View>
 
-          {error ? <ThemedText type="small" style={styles.error}>{error}</ThemedText> : null}
+          {error ? <ThemedText type="small" style={[styles.error, { color: theme.danger }]}>{error}</ThemedText> : null}
           {state.status === 'finished' ? (
-            <ThemedText type="small" themeColor="textSecondary">Waktu habis. Notifikasi suara belum tersedia.</ThemedText>
+            <View style={styles.finishedFeedback}>
+              <ThemedText type="small" themeColor="textSecondary">Waktu habis. Suara MathWake sedang diputar.</ThemedText>
+              <Pressable
+                onPress={() => { void dismissNativeTimerSound(); }}
+                accessibilityRole="button"
+                accessibilityLabel="Hentikan suara Timer"
+                android_ripple={androidRipple(theme.primarySoft)}
+                style={({ pressed }) => [styles.secondaryButton, { backgroundColor: theme.backgroundSelected }, pressed && styles.pressed]}>
+                <ThemedText type="smallBold">Hentikan suara</ThemedText>
+              </Pressable>
+            </View>
           ) : null}
 
           <View style={styles.actions}>
@@ -196,20 +213,22 @@ export default function TimerScreen() {
               disabled={state.status === 'finished'}
               accessibilityRole="button"
               accessibilityLabel={buttonLabel}
-              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed, state.status === 'finished' && styles.disabled]}>
-              <ThemedText style={styles.primaryText}>{buttonLabel}</ThemedText>
+              android_ripple={androidRipple(theme.onPrimary)}
+              style={({ pressed }) => [styles.primaryButton, { backgroundColor: theme.primary }, pressed && styles.pressed, state.status === 'finished' && styles.disabled]}>
+              <ThemedText style={[styles.primaryText, { color: theme.onPrimary }]}>{buttonLabel}</ThemedText>
             </Pressable>
             <Pressable
               onPress={() => updateState((current) => resetTimer(current))}
               accessibilityRole="button"
               accessibilityLabel="Reset timer"
-              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
+              android_ripple={androidRipple(theme.primarySoft)}
+              style={({ pressed }) => [styles.secondaryButton, { backgroundColor: theme.backgroundSelected }, pressed && styles.pressed]}>
               <ThemedText type="smallBold">Reset</ThemedText>
             </Pressable>
           </View>
         </View>
       </ScrollView>
-    </ThemedView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -219,13 +238,14 @@ const styles = StyleSheet.create({
   inner: { width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center', paddingHorizontal: Spacing.four, gap: Spacing.three },
   card: { borderRadius: Radius.block, alignItems: 'center', paddingVertical: Spacing.six, gap: Spacing.one },
   clock: { fontSize: 48, lineHeight: 56, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  durationRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
-  input: { minWidth: 80, borderWidth: 1, borderRadius: Radius.control, paddingHorizontal: Spacing.two, paddingVertical: Spacing.two, textAlign: 'center', fontSize: 18 },
+  durationRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.two },
+  input: { minWidth: 80, minHeight: 48, borderWidth: 1, borderRadius: Radius.control, paddingHorizontal: Spacing.two, paddingVertical: Spacing.two, textAlign: 'center', fontSize: 18 },
   actions: { flexDirection: 'row', gap: Spacing.two },
-  primaryButton: { flex: 1, backgroundColor: Accent, borderRadius: Radius.control, alignItems: 'center', paddingVertical: Spacing.three },
-  primaryText: { color: '#fff', fontWeight: '700' },
-  secondaryButton: { borderRadius: Radius.control, paddingHorizontal: Spacing.three, paddingVertical: Spacing.three, backgroundColor: '#00000012', alignItems: 'center' },
-  error: { color: '#d33', lineHeight: 20 },
+  primaryButton: { flex: 1, minWidth: 120, minHeight: 48, borderRadius: Radius.control, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.three, paddingVertical: Spacing.two },
+  primaryText: { fontWeight: '700' },
+  secondaryButton: { minHeight: 48, borderRadius: Radius.control, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, alignItems: 'center', justifyContent: 'center' },
+  error: { lineHeight: 20 },
+  finishedFeedback: { gap: Spacing.two, alignItems: 'flex-start' },
   pressed: { opacity: 0.75 },
   disabled: { opacity: 0.45 },
 });

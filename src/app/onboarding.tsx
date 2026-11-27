@@ -1,5 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
+import { SymbolView } from 'expo-symbols';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -13,7 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { completeMyOnboarding, isGoogleUser } from '@/lib/profile';
@@ -45,7 +46,9 @@ export default function OnboardingScreen() {
   } = useAuth();
   const [displayName, setDisplayName] = useState(profile?.display_name ?? '');
   const [password, setPassword] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [confirmation, setConfirmation] = useState('');
+  const [confirmationVisible, setConfirmationVisible] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -90,20 +93,20 @@ export default function OnboardingScreen() {
 
   if (recoveryActive) {
     return (
-      <View style={styles.flex}>
+      <ScrollView style={styles.flex} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.centerCard}>
           <ThemedText type="subtitle">Pemulihan password sedang berlangsung</ThemedText>
           <ThemedText type="small" themeColor="textSecondary">
             Selesaikan pemulihan password terlebih dahulu.
           </ThemedText>
         </View>
-      </View>
+      </ScrollView>
     );
   }
 
   if (profileError) {
     return (
-      <View style={styles.flex}>
+      <ScrollView style={styles.flex} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
         <View style={styles.centerCard}>
           <ThemedText type="subtitle">Profil belum dapat dimuat</ThemedText>
           <ThemedText type="small" themeColor="textSecondary">
@@ -111,7 +114,7 @@ export default function OnboardingScreen() {
           </ThemedText>
           <ActionButton label="Coba lagi" loading={loading} onPress={refreshProfile} disabled={loading} styles={styles} />
         </View>
-      </View>
+      </ScrollView>
     );
   }
 
@@ -130,26 +133,64 @@ export default function OnboardingScreen() {
 
           {googleOnboarding && (
             <>
-              <TextInput
-                style={styles.input}
-                placeholder="Password MathWake"
-                placeholderTextColor={theme.textSecondary}
-                secureTextEntry
-                autoComplete="new-password"
-                value={password}
-                onChangeText={(value) => { setPassword(value); setFormError(null); }}
-                editable={!loading}
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="Konfirmasi password MathWake"
-                placeholderTextColor={theme.textSecondary}
-                secureTextEntry
-                autoComplete="new-password"
-                value={confirmation}
-                onChangeText={(value) => { setConfirmation(value); setFormError(null); }}
-                editable={!loading}
-              />
+              <View style={styles.passwordContainer}>
+                <TextInput
+                  style={[styles.input, styles.passwordInput]}
+                  placeholder="Password MathWake"
+                  placeholderTextColor={theme.textSecondary}
+                  secureTextEntry={!passwordVisible}
+                  autoComplete="new-password"
+                  value={password}
+                  onChangeText={(value) => { setPassword(value); setFormError(null); }}
+                  editable={!loading}
+                />
+                <Pressable
+                  onPress={() => setPasswordVisible((v) => !v)}
+                  disabled={loading}
+                  accessibilityRole="button"
+                  accessibilityLabel={passwordVisible ? 'Sembunyikan password' : 'Tampilkan password'}
+                  style={styles.eyeButton}
+                  hitSlop={8}>
+                  <SymbolView
+                    name={
+                      passwordVisible
+                        ? { ios: 'eye.slash', android: 'visibility_off', web: 'visibility_off' }
+                        : { ios: 'eye', android: 'visibility', web: 'visibility' }
+                    }
+                    size={20}
+                    tintColor={theme.textSecondary}
+                  />
+                </Pressable>
+              </View>
+              <View style={styles.passwordContainer}>
+                <TextInput
+                  style={[styles.input, styles.passwordInput]}
+                  placeholder="Konfirmasi password MathWake"
+                  placeholderTextColor={theme.textSecondary}
+                  secureTextEntry={!confirmationVisible}
+                  autoComplete="new-password"
+                  value={confirmation}
+                  onChangeText={(value) => { setConfirmation(value); setFormError(null); }}
+                  editable={!loading}
+                />
+                <Pressable
+                  onPress={() => setConfirmationVisible((v) => !v)}
+                  disabled={loading}
+                  accessibilityRole="button"
+                  accessibilityLabel={confirmationVisible ? 'Sembunyikan konfirmasi password' : 'Tampilkan konfirmasi password'}
+                  style={styles.eyeButton}
+                  hitSlop={8}>
+                  <SymbolView
+                    name={
+                      confirmationVisible
+                        ? { ios: 'eye.slash', android: 'visibility_off', web: 'visibility_off' }
+                        : { ios: 'eye', android: 'visibility', web: 'visibility' }
+                    }
+                    size={20}
+                    tintColor={theme.textSecondary}
+                  />
+                </Pressable>
+              </View>
             </>
           )}
 
@@ -185,8 +226,13 @@ function ActionButton({
   styles: ReturnType<typeof makeStyles>;
 }) {
   return (
-    <Pressable style={styles.button} onPress={onPress} disabled={disabled} accessibilityRole="button">
-      {loading ? <ActivityIndicator color="#ffffff" /> : <ThemedText style={styles.buttonText}>{label}</ThemedText>}
+    <Pressable
+      style={({ pressed }) => [styles.button, (pressed || disabled) && { opacity: disabled ? 0.5 : 0.85 }]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityState={{ disabled, busy: loading }}>
+      {loading ? <ActivityIndicator color={styles.buttonText.color} /> : <ThemedText style={styles.buttonText}>{label}</ThemedText>}
     </Pressable>
   );
 }
@@ -204,34 +250,56 @@ function makeStyles(theme: ReturnType<typeof useTheme>, insets: ReturnType<typeo
     card: {
       gap: Spacing.three,
       padding: Spacing.four,
-      borderRadius: 20,
+      borderRadius: Radius.block,
       backgroundColor: theme.backgroundElement,
     },
     centerCard: {
       margin: Spacing.four,
       padding: Spacing.four,
+      width: '100%',
+      maxWidth: 440,
+      alignSelf: 'center',
       gap: Spacing.three,
-      borderRadius: 20,
+      borderRadius: Radius.block,
       backgroundColor: theme.backgroundElement,
     },
     title: { fontSize: 24 },
     input: {
+      minHeight: 48,
       borderWidth: 1.5,
-      borderColor: theme.backgroundSelected,
-      borderRadius: 12,
+      borderColor: theme.border,
+      borderRadius: Radius.control,
       paddingHorizontal: Spacing.three,
       paddingVertical: Platform.OS === 'ios' ? 14 : 10,
       fontSize: 16,
       color: theme.text,
       backgroundColor: theme.background,
     },
+    passwordContainer: {
+      position: 'relative',
+      justifyContent: 'center',
+    },
+    passwordInput: {
+      paddingRight: 48,
+    },
+    eyeButton: {
+      position: 'absolute',
+      right: Spacing.two,
+      height: '100%',
+      justifyContent: 'center',
+      alignItems: 'center',
+      minWidth: 44,
+      minHeight: 44,
+    },
     button: {
-      backgroundColor: '#208AEF',
-      borderRadius: 14,
+      backgroundColor: theme.primary,
+      borderRadius: Radius.control,
+      minHeight: 52,
+      justifyContent: 'center',
       paddingVertical: 15,
       alignItems: 'center',
     },
-    buttonText: { color: '#ffffff', fontWeight: '700' },
-    error: { color: '#B91C1C' },
+    buttonText: { color: theme.onPrimary, fontWeight: '700', fontSize: 16 },
+    error: { color: theme.danger },
   });
 }
