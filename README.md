@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="docs/images/logo.png" alt="Logo MathWake: matahari di atas garis cakrawala dan bulan sabit di bawahnya" width="128">
-
 # MathWake
 
 **Aplikasi alarm yang baru berhenti setelah penggunanya menyelesaikan tantangan matematika.**
@@ -13,10 +11,13 @@
 ![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)
 ![Lisensi MIT](https://img.shields.io/badge/Lisensi-MIT-informational?style=flat-square)
 
-[![Pasang Demo](https://img.shields.io/badge/Pasang_Demo-Expo_Build-000020?style=for-the-badge&logo=expo&logoColor=white)](https://expo.dev/accounts/nextherinn/projects/MathWake/builds/eba85465-81a0-4561-a815-14f9e6f5167a)
-[![Source Code](https://img.shields.io/badge/Source_Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Muhamad-Haekal/MathWake)
+<br>
 
-Karya untuk Traspac Competition 2027
+**[Pasang Demo](https://expo.dev/accounts/nextherinn/projects/MathWake/builds/eba85465-81a0-4561-a815-14f9e6f5167a)**
+&nbsp;·&nbsp;
+**[Source Code](https://github.com/Muhamad-Haekal/MathWake)**
+
+<sub>Karya untuk Traspac Competition 2027</sub>
 
 </div>
 
